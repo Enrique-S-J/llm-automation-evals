@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from llm_automation_evals.models import Case, RawOutput, Task
+from llm_automation_evals.runner import Suite
 
 LABELS = ["voice", "network", "infrastructure", "other"]
 
@@ -56,6 +57,10 @@ def make_case(case_id: str = "case-1", **fields: Any) -> Case:
 
 def abstain_case(case_id: str = "abstain-1", **fields: Any) -> Case:
     return make_case(case_id, expected={}, expect_abstain=True, **fields)
+
+
+def make_suite(*cases: Case, **task_overrides: Any) -> Suite:
+    return Suite(task=make_task(**task_overrides), cases=list(cases) or [make_case()])
 
 
 def reply(**fields: Any) -> str:
