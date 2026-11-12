@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from helpers import oracle_reply
+from helpers import TASK, oracle_reply
 from llm_automation_evals.runner import load_suite, render_prompt
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "ticket_classifier"
@@ -346,6 +346,50 @@ def test_fail_under_turns_the_pass_rate_into_an_exit_code(workdir, task_dir, stu
     assert "Pass rate is below --fail-under 95." in below.stderr
     met = cli("run", task_dir, "--out", workdir / "b", "--fail-under", "90", cwd=workdir, stub=stub)
     assert met.returncode == 0
+
+
+@pytest.fixture
+def sized_run(workdir):
+    """Run a generated suite of `total` cases in which `passing` replies are right."""
+    stubs = []
+
+    def run(total, passing, *args):
+        directory = workdir / f"suite of {total}"
+        directory.mkdir()
+        cases = [
+            {"id": f"case-{n:03d}", "input": {"subject": f"ticket {n}", "body": "b"}, "expected": {"category": "voice"}}
+            for n in range(total)
+        ]
+        (directory / "task.yaml").write_text(yaml.safe_dump(TASK), encoding="utf-8")
+        (directory / "cases.yaml").write_text(yaml.safe_dump({"cases": cases}), encoding="utf-8")
+        stub = Stub(load_suite(directory))
+        stubs.append(stub)
+        for case in stub.suite.cases[passing:]:
+            stub.replies[case.id] = oracle_reply(stub.suite, case, category="network")
+        return cli("run", directory, "--out", directory / "out", *args, cwd=workdir, stub=stub)
+
+    yield run
+    for stub in stubs:
+        stub.close()
+
+
+def test_fail_under_is_met_by_a_pass_rate_exactly_at_the_threshold(sized_run):
+    """29 of 50 is 58%, and 0.58 * 100 is 57.99999999999999 in floating point.
+
+    The gate used to multiply the stored rate by 100, so this run failed a
+    threshold it meets. The comparison is now made on the counts.
+    """
+    result = sized_run(50, 29, "--fail-under", "58")
+    assert "mini: 29/50 (58.0%) passed" in result.stdout
+    assert result.returncode == 0, result.stderr
+
+
+def test_fail_under_is_not_met_by_a_rate_that_only_rounds_up_to_it(sized_run):
+    # 2 of 3 is 66.666...%. The stored rate is rounded to 0.6667, which
+    # used to satisfy a threshold of 66.67.
+    result = sized_run(3, 2, "--fail-under", "66.67")
+    assert result.returncode == 1
+    assert "Pass rate is below --fail-under 66.67." in result.stderr
 
 
 def test_judge_flag_adds_one_judge_request_per_gradable_case(workdir, task_dir, stub):

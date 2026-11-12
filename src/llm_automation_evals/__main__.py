@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from fractions import Fraction
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -43,12 +44,16 @@ def _err(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def _percentage(value: str) -> float:
+def _percentage(value: str) -> Fraction:
+    # Kept as an exact fraction: the threshold is compared with a ratio of
+    # two counts, and binary floating point gets cases such as 29/50 against
+    # 58 wrong.
     try:
-        number = float(value)
-    except ValueError:
+        in_range = 0 <= float(value) <= 100
+        number = Fraction(value)
+    except (ValueError, ZeroDivisionError):
         raise argparse.ArgumentTypeError(f"{value!r} is not a number") from None
-    if not 0 <= number <= 100:
+    if not in_range:
         raise argparse.ArgumentTypeError("must be a percentage from 0 to 100")
     return number
 
@@ -131,7 +136,7 @@ def _cannot_write(out_dir: Path, exc: OSError) -> ConfigError:
     return ConfigError(f"cannot write the report to '{out_dir}': {exc.strerror}")
 
 
-def _finish(report: Report, out_dir: Path, fail_under: Optional[float]) -> int:
+def _finish(report: Report, out_dir: Path, fail_under: Optional[Fraction]) -> int:
     try:
         json_path, md_path = write_report(out_dir, report)
     except OSError as exc:
@@ -150,8 +155,8 @@ def _finish(report: Report, out_dir: Path, fail_under: Optional[float]) -> int:
             "The pass rate above counts them as not passed; see the Errors section."
         )
         return EXIT_INCOMPLETE
-    if fail_under is not None and (totals.pass_rate or 0.0) * 100 < fail_under:
-        _err(f"Pass rate is below --fail-under {fail_under:g}.")
+    if fail_under is not None and totals.passed * 100 < fail_under * totals.cases:
+        _err(f"Pass rate is below --fail-under {float(fail_under):g}.")
         return EXIT_GATE
     return EXIT_OK
 
