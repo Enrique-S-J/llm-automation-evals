@@ -25,8 +25,11 @@ class Flip:
     candidate_actual: Optional[dict[str, Any]]
     ambiguous: bool = False
     # False when the model said exactly the same thing in both reports, which
-    # means the flip came from a change to the suite, not to the model.
+    # means the flip did not come from the model.
     output_changed: bool = True
+    # True when the judge's reply differs. With an unchanged output, that
+    # makes the flip the judge's doing; otherwise the suite changed.
+    judge_changed: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,7 +52,7 @@ class Comparison:
     regressions: list[Flip] = field(default_factory=list)
     fixes: list[Flip] = field(default_factory=list)
     still_failing: list[str] = field(default_factory=list)
-    # Cases where one side has no model output, so there is no verdict to
+    # Cases where a request failed on one side, so there is no verdict to
     # compare: (case id, baseline status, candidate status).
     not_comparable: list[tuple[str, str, str]] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
@@ -93,13 +96,14 @@ def compare_reports(baseline: Report, candidate: Report) -> Comparison:
             result.not_comparable.append((case.id, old.status, case.status))
             continue
         changed = old.raw_output != case.raw_output
+        judge_changed = old.judge_raw_output != case.judge_raw_output
         if pair == ("passed", "failed"):
             result.regressions.append(
-                Flip(case.id, _failing(case), case.expected, old.actual, case.actual, case.ambiguous, changed)
+                Flip(case.id, _failing(case), case.expected, old.actual, case.actual, case.ambiguous, changed, judge_changed)
             )
         elif pair == ("failed", "passed"):
             result.fixes.append(
-                Flip(case.id, _failing(old), case.expected, old.actual, case.actual, case.ambiguous, changed)
+                Flip(case.id, _failing(old), case.expected, old.actual, case.actual, case.ambiguous, changed, judge_changed)
             )
         elif pair == ("failed", "failed"):
             result.still_failing.append(case.id)
@@ -153,7 +157,12 @@ def _flip_line(flip: Flip, failed_side: str) -> str:
                 f"was {_shown(flip.baseline_actual, name)}, now {_shown(flip.candidate_actual, name)}"
             )
     detail = "; " + "; ".join(changes) if changes else ""
-    if not flip.output_changed:
+    if not flip.output_changed and flip.judge_changed:
+        detail += (
+            "; the model's output is identical in both reports and the judge's reply is not, "
+            "so the judge changed, not the model"
+        )
+    elif not flip.output_changed:
         detail += "; the model's output is identical in both reports, so the suite changed, not the model"
     return f"- `{flip.case_id}`{tag}: {failed_side} {scorers}{detail}"
 
@@ -217,7 +226,8 @@ def render_comparison(comparison: Comparison) -> str:
             "",
             f"## Not comparable ({len(comparison.not_comparable)})",
             "",
-            "No model output on at least one side, so these are neither regressions nor fixes.",
+            "A request failed on at least one side, so there is no verdict to compare. "
+            "These are neither regressions nor fixes.",
             "",
         ]
         lines += [

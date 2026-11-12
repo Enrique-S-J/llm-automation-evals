@@ -166,7 +166,7 @@ def test_request_errors_are_listed_apart_from_failures():
     errored = next(case for case in report.cases if case.id == "o1")
     assert errored.scores == [] and errored.raw_output is None
     markdown = render_markdown(report)
-    assert "- Errors (no model output): 1" in markdown
+    assert "- Errors (a request failed, no verdict): 1" in markdown
     assert "- `o1`: HTTP 503 (after 1 retry)" in markdown.split("## Errors")[1]
 
 
@@ -219,6 +219,56 @@ def test_judge_results_appear_only_when_the_judge_ran():
     # Advisory: a low grade is reported and the case still passes.
     assert report.cases[0].status == "passed"
     assert "| LLM judge | on, `big-model` |" in render_markdown(report)
+
+
+REQUIRED_JUDGE = ["json_schema", "exact_field", {"type": "llm_judge", "required": True}]
+JUDGE_DOWN = "HTTP 503 (after 1 retry)"
+
+
+def test_a_required_judge_that_could_not_be_reached_is_an_error_not_a_failure():
+    """A failed judge request is an outage, like a failed model request.
+
+    The case used to be scored "failed", so `run` exited 0 with one fewer
+    pass and compare reported a regression, with the explanation that the
+    suite must have changed. Neither the suite nor the model had.
+    """
+    suite = make_suite(make_case("v1", scorers=REQUIRED_JUDGE), make_case("v2"))
+    graded = [out(reply(), "v1", judge_text='{"score": 4, "reason": "Fine."}'), out(reply(), "v2")]
+    judge_down = [out(reply(), "v1", judge_error=JUDGE_DOWN), out(reply(), "v2")]
+
+    baseline = build(suite=suite, outputs=graded)
+    candidate = build(suite=suite, outputs=judge_down)
+    assert statuses(baseline) == {"v1": "passed", "v2": "passed"}
+    assert statuses(candidate) == {"v1": "error", "v2": "passed"}
+    v1 = candidate.cases[0]
+    assert v1.error == f"judge request failed: {JUDGE_DOWN}"
+    assert v1.raw_output == reply()  # the model did answer, and the answer is kept
+    assert (candidate.totals.passed, candidate.totals.failed, candidate.totals.errors) == (1, 0, 1)
+    # The reply exists, so the confusion table still counts it.
+    assert candidate.confusion.matrix[0][0] == 2
+    assert f"- `v1`: judge request failed: {JUDGE_DOWN}" in render_markdown(candidate).split("## Errors")[1]
+
+    comparison = compare_reports(baseline, candidate)
+    assert comparison.regressions == []
+    assert comparison.not_comparable == [("v1", "passed", "error")]
+    assert "suite changed" not in render_comparison(comparison)
+
+    # Re-scoring the saved report reaches the same verdict.
+    assert render_json(build(suite=suite, outputs=outputs_from_report(candidate))) == render_json(candidate)
+
+
+def test_a_wrong_answer_is_a_failure_whether_or_not_the_judge_could_be_reached():
+    suite = make_suite(make_case("v1", scorers=REQUIRED_JUDGE))
+    report = build(suite=suite, outputs=[out(reply(category="network"), "v1", judge_error=JUDGE_DOWN)])
+    assert statuses(report) == {"v1": "failed"}
+    assert report.cases[0].error is None
+
+
+def test_an_advisory_judge_that_could_not_be_reached_does_not_change_the_verdict():
+    suite = make_suite(make_case("v1"))
+    report = build(suite=suite, outputs=[out(reply(), "v1", judge_error=JUDGE_DOWN)], judge=True)
+    assert statuses(report) == {"v1": "passed"}
+    assert f"- `v1` `llm_judge`: `judge request failed: {JUDGE_DOWN}`" in render_markdown(report)
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +526,25 @@ def test_compare_says_when_a_flip_comes_from_the_suite_and_not_the_model():
     changed = compare_reports(build(), build(outputs=CANDIDATE_OUTPUTS))
     assert changed.regressions[0].output_changed is True
     assert "suite changed" not in render_comparison(changed)
+
+
+def test_compare_blames_the_judge_when_only_the_judge_changed_its_mind():
+    """Same model output, a required judge that graded it 4 and then 2.
+
+    That is judge noise. It used to be reported as "the suite changed".
+    """
+    suite = make_suite(make_case("v1", scorers=REQUIRED_JUDGE))
+    baseline = build(suite=suite, outputs=[out(reply(), "v1", judge_text='{"score": 4, "reason": "Fine."}')])
+    candidate = build(suite=suite, outputs=[out(reply(), "v1", judge_text='{"score": 2, "reason": "Vague."}')])
+    comparison = compare_reports(baseline, candidate)
+    (flip,) = comparison.regressions
+    assert (flip.failing, flip.output_changed, flip.judge_changed) == (["llm_judge"], False, True)
+    text = render_comparison(comparison)
+    assert (
+        "- `v1`: now fails `llm_judge`; the model's output is identical in both reports and the "
+        "judge's reply is not, so the judge changed, not the model"
+    ) in text
+    assert "suite changed" not in text
 
 
 def test_compare_does_not_call_an_outage_a_regression():

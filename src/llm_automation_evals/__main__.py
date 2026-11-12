@@ -8,7 +8,7 @@ Exit codes:
   0  completed
   1  a gate failed: `run`/`report` below --fail-under, or `compare` found regressions
   2  usage or configuration error; nothing was run
-  3  the run is incomplete: at least one case got no model output
+  3  the run is incomplete: a request failed and at least one case has no verdict
   4  the harness itself failed; a bug, not a result
 """
 
@@ -147,14 +147,14 @@ def _finish(report: Report, out_dir: Path, fail_under: Optional[Fraction]) -> in
     totals = report.totals
     print(
         f"{report.task}: {fraction(totals.passed, totals.cases)} passed; "
-        f"{totals.failed} failed, {totals.errors} without model output"
+        f"{totals.failed} failed, {totals.errors} with no verdict"
     )
     print(f"model: {report.model}  endpoint host: {report.endpoint_host}")
     print(f"report: {md_path}")
     print(f"data:   {json_path}")
     if totals.errors:
         _err(
-            f"Incomplete: {totals.errors} of {totals.cases} cases got no model output. "
+            f"Incomplete: {totals.errors} of {totals.cases} cases have no verdict because a request failed. "
             "The pass rate above counts them as not passed; see the Errors section."
         )
         return EXIT_INCOMPLETE

@@ -41,7 +41,8 @@ class Stub:
     """A local OpenAI-compatible endpoint with scripted replies.
 
     `replies` maps a case id to the reply text. `statuses` maps a case id to
-    an HTTP status to return instead. Every request is recorded.
+    an HTTP status to return instead, and `judge_status` is the status every
+    judge request gets. Every request is recorded.
     """
 
     def __init__(self, suite):
@@ -49,6 +50,7 @@ class Stub:
         self.case_by_prompt = {render_prompt(suite.task, case): case for case in suite.cases}
         self.replies = {case.id: oracle_reply(suite, case) for case in suite.cases}
         self.statuses = {}
+        self.judge_status = 200
         self.requests = []
         self._lock = threading.Lock()
         stub = self
@@ -88,6 +90,8 @@ class Stub:
             self.requests.append(record)
         if path != "/v1/chat/completions":
             return 404, {"error": {"message": "not found"}}
+        if is_judge and self.judge_status != 200:
+            return self.judge_status, {"error": {"message": "scripted judge failure"}}
         if is_judge:
             content = '{"score": 4, "reason": "Accurate and brief."}'
         elif case is None:
@@ -178,7 +182,7 @@ def test_run_scores_the_example_suite_and_writes_both_reports(workdir, task_dir,
     result = cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub)
 
     assert result.returncode == 0, result.stderr
-    assert "ticket_classifier: 27/30 (90.0%) passed; 3 failed, 0 without model output" in result.stdout
+    assert "ticket_classifier: 27/30 (90.0%) passed; 3 failed, 0 with no verdict" in result.stdout
     assert "model: stub-model  endpoint host: 127.0.0.1" in result.stdout
 
     report = json.loads(read(out_dir, "report.json"))
@@ -280,7 +284,7 @@ def test_run_exits_3_and_lists_the_case_when_a_request_keeps_failing(workdir, ta
 
     assert result.returncode == 3
     assert "net-02: HTTP 500, retrying once" in result.stderr
-    assert "Incomplete: 1 of 30 cases got no model output." in result.stderr
+    assert "Incomplete: 1 of 30 cases have no verdict because a request failed." in result.stderr
     # One retry, so exactly two requests for that case and one for the rest.
     assert stub.count("net-02") == 2
     assert len(stub.requests) == 31
@@ -429,6 +433,28 @@ def test_judge_flag_adds_one_judge_request_per_gradable_case(workdir, task_dir, 
     judge = next(s for s in report["by_scorer"] if s["scorer"] == "llm_judge")
     assert judge == {"scorer": "llm_judge", "required": False, "applicable": 24, "passed": 24, "pass_rate": 1.0}
     assert "| `llm_judge` | no | 24 | 24 | 100.0% |" in read(out_dir, "report.md")
+
+
+def test_a_judge_outage_on_a_required_judge_is_an_incomplete_run_not_a_regression(workdir, task_dir, stub):
+    cases = yaml.safe_load(read(task_dir, "cases.yaml"))
+    cases["cases"][0]["scorers"] = ["json_schema", "exact_field", "keyword", {"type": "llm_judge", "required": True}]
+    (task_dir / "cases.yaml").write_text(yaml.safe_dump(cases, sort_keys=False), encoding="utf-8")
+    baseline, candidate = workdir / "baseline", workdir / "candidate"
+
+    assert cli("run", task_dir, "--out", baseline, cwd=workdir, stub=stub).returncode == 0
+    stub.judge_status = 503
+    result = cli("run", task_dir, "--out", candidate, cwd=workdir, stub=stub)
+
+    assert result.returncode == 3
+    assert "voice-01 (judge): HTTP 503, retrying once" in result.stderr
+    assert "ticket_classifier: 29/30 (96.7%) passed; 0 failed, 1 with no verdict" in result.stdout
+    assert "- `voice-01`: judge request failed: HTTP 503 (after 1 retry)" in read(candidate, "report.md")
+
+    compared = cli("compare", baseline, candidate, cwd=workdir)
+    assert compared.returncode == 0
+    assert "**0 regressions, 0 fixes.**" in compared.stdout
+    assert "- `voice-01`: passed -> error" in compared.stdout.split("## Not comparable (1)")[1]
+    assert "suite changed" not in compared.stdout
 
 
 # ---------------------------------------------------------------------------

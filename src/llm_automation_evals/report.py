@@ -30,7 +30,7 @@ from .models import (
     Totals,
 )
 from .runner import Suite
-from .scorers import case_passed, parse_output, score_case
+from .scorers import NO_VERDICT, case_status, parse_output, score_case
 
 SCHEMA_VERSION = 1
 REPORT_JSON = "report.json"
@@ -98,7 +98,12 @@ def build_report(
             fenced += parsed.fenced
             result.actual = parsed.obj
             result.scores = score_case(task, case, output, judge)
-            result.status = "passed" if case_passed(result.scores) else "failed"
+            result.status = case_status(result.scores)
+            if result.status == "error":
+                # The model answered; a required judge could not be asked.
+                result.error = next(
+                    s.detail for s in result.scores if s.required and s.data.get(NO_VERDICT)
+                )
         elif result.error is None:
             result.error = "no output was recorded"
         results.append(result)
@@ -168,7 +173,7 @@ def _confusion(suite: Suite, results: list[CaseResult]) -> Optional[Confusion]:
         want = result.expected.get(field)
         # Cases with no reply have no "actual" to tabulate, and a case that
         # states no expectation for this field has no row.
-        if result.status == "error" or want not in labels:
+        if result.raw_output is None or want not in labels:
             continue
         got = result.actual.get(field) if result.actual is not None else None
         column = labels.index(got) if isinstance(got, str) and got in labels else len(labels)
@@ -264,7 +269,7 @@ def render_markdown(report: Report) -> str:
         "",
         f"- Passed: {totals.passed}",
         f"- Failed: {totals.failed}",
-        f"- Errors (no model output): {totals.errors}",
+        f"- Errors (a request failed, no verdict): {totals.errors}",
         f"- Replies wrapped in a code fence: {totals.fenced_outputs} of {totals.outputs}"
         " (stripped before scoring; a prompt-quality signal, not a failure)",
         "",
@@ -323,7 +328,13 @@ def render_markdown(report: Report) -> str:
 
     errored = [r for r in report.cases if r.status == "error"]
     if errored:
-        lines += ["## Errors", "", "No model output was obtained for these cases, so nothing was scored.", ""]
+        lines += [
+            "## Errors",
+            "",
+            "A request failed for these cases, so they have no verdict: the request for the "
+            "model's reply, or one to a judge the case requires.",
+            "",
+        ]
         lines += [f"- `{r.id}`{_flags(r)}: {r.error}" for r in errored]
         lines.append("")
 

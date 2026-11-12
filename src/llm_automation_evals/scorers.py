@@ -31,6 +31,11 @@ _DETAIL_LIMIT = 300
 # the schema validator, or the serializer that writes the report.
 MAX_DEPTH = 64
 
+# Key set in ScoreResult.data when a scorer could not reach a verdict at all,
+# as opposed to reaching a negative one. Only the judge can be in that
+# position: its grade comes from a second request, and requests fail.
+NO_VERDICT = "no_verdict"
+
 
 @dataclass(frozen=True)
 class ParsedOutput:
@@ -364,9 +369,13 @@ class LlmJudgeScorer(Scorer):
         if self.candidate(output) is None:
             return self._result(False, f"output has no '{self._field}' text to grade")
         if output.judge_error:
-            return self._result(False, f"judge request failed: {output.judge_error}")
+            return self._result(
+                False, f"judge request failed: {output.judge_error}", data={NO_VERDICT: True}
+            )
         if output.judge_text is None:
-            return self._result(False, "no judge reply was recorded for this case")
+            return self._result(
+                False, "no judge reply was recorded for this case", data={NO_VERDICT: True}
+            )
         reply = parse_output(output.judge_text).obj
         grade = reply.get("score") if reply is not None else None
         if isinstance(grade, float) and grade.is_integer():
@@ -425,3 +434,18 @@ def score_case(task: Task, case: Case, output: RawOutput, judge: bool = False) -
 def case_passed(scores: list[ScoreResult]) -> bool:
     """A case passes only if every required scorer passed."""
     return all(result.passed for result in scores if result.required)
+
+
+def case_status(scores: list[ScoreResult]) -> str:
+    """"passed", "failed", or "error" for a case that got a reply.
+
+    A required scorer that reached a negative verdict fails the case. If
+    none did, but a required scorer could not reach a verdict (the judge
+    request failed), the case is an error: an outage, not a wrong answer.
+    """
+    required = [result for result in scores if result.required]
+    if any(not r.passed and not r.data.get(NO_VERDICT) for r in required):
+        return "failed"
+    if any(r.data.get(NO_VERDICT) for r in required):
+        return "error"
+    return "passed"

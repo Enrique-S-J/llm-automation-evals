@@ -16,6 +16,7 @@ from llm_automation_evals.scorers import (
     SafeFailureScorer,
     build_scorers,
     case_passed,
+    case_status,
     parse_output,
     score_case,
     scorers_for,
@@ -285,6 +286,12 @@ def test_judge_fails_when_the_judge_call_failed_or_never_happened():
     assert not failed.passed and failed.detail == "judge request failed: HTTP 503 (after 1 retry)"
     absent = scorer(LlmJudgeScorer).score(make_case(), judged(None))
     assert not absent.passed and "no judge reply" in absent.detail
+    # Neither is a grade. They are marked so a required judge that could not
+    # be asked leaves the case without a verdict, not with a failure.
+    assert failed.data == absent.data == {"no_verdict": True}
+    assert case_status([failed.model_copy(update={"required": True})]) == "error"
+    low = scorer(LlmJudgeScorer, required=True).score(make_case(), judged('{"score": 1}'))
+    assert low.data == {} and case_status([low]) == "failed"
 
 
 def test_judge_is_advisory_by_default_and_skips_abstain_cases():
