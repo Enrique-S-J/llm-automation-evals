@@ -267,6 +267,25 @@ def test_the_api_key_is_redacted_from_logged_error_bodies():
     assert logged == ["case-1: HTTP 401 Incorrect API key provided: [redacted]"]
 
 
+def test_a_key_that_straddles_the_log_cut_is_redacted_whole():
+    """The logged body is cut at 200 characters, and redaction is a string replace.
+
+    Cutting first left the leading part of a key that crossed the cut on
+    stderr, where the replace no longer matched it.
+    """
+    logged = []
+    key = "sk-test-SECRETKEY-0123456789"
+    endpoint = Endpoint("http://llm.test/v1", "m", api_key=key)
+    filler = "x" * 185
+
+    def handler(request):
+        return httpx.Response(401, text=f"{filler}{key} is not a valid key")
+
+    run(make_suite(), handler, endpoint=endpoint, log=logged.append)
+    assert logged == [f"case-1: HTTP 401 {filler}[redacted] is n"]
+    assert "sk-test" not in logged[0]
+
+
 # ---------------------------------------------------------------------------
 # Concurrency and ordering
 # ---------------------------------------------------------------------------

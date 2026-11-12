@@ -321,7 +321,9 @@ class _Caller:
                         return _extract_content(response)
                     failure = f"HTTP {response.status_code}"
                     if response.status_code < 500:
-                        snippet = self._redact(" ".join(response.text.split())[:200])
+                        # Redact before cutting: a key that crosses the cut
+                        # would no longer match and its first part would show.
+                        snippet = self._redact(" ".join(response.text.split()))[:200]
                         self._log(f"{label}: {failure} {snippet}".rstrip())
                         return None, failure
                 if attempt == 1:
