@@ -789,7 +789,7 @@ def test_an_interrupted_run_keeps_the_replies_that_had_arrived(workdir, task_dir
         while stub.answered < 28 and time.monotonic() < deadline:
             time.sleep(0.05)
         assert stub.answered == 28
-        time.sleep(0.5)  # let the last replies travel from the socket into the run
+        time.sleep(1.0)  # let the last replies travel from the socket into the run
         process.send_signal(signal.SIGINT)
         _, stderr = process.communicate(timeout=30)
     finally:
