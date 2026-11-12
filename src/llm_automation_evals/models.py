@@ -106,6 +106,14 @@ class EndpointEnv(_Strict):
     judge_model_env: str = "EVAL_JUDGE_MODEL"
 
 
+# Request body keys the harness sets itself, and where each comes from.
+_OWNED_BODY_KEYS = {
+    "model": "the model comes from the environment, and the report names it",
+    "messages": "the prompt is built from the task and the case",
+    "temperature": "request.temperature does that, and the report states it",
+}
+
+
 class RequestSettings(_Strict):
     temperature: Union[int, float] = 0
     max_tokens: Optional[int] = Field(default=512, ge=1)
@@ -129,6 +137,12 @@ class RequestSettings(_Strict):
     @field_validator("extra_body")
     @classmethod
     def _plain_json(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # extra_body is merged last, so one of these keys would replace what
+        # the harness sends, and the report would go on stating the model
+        # and temperature of a request that was never made.
+        for key, owner in _OWNED_BODY_KEYS.items():
+            if key in value:
+                raise ValueError(f"must not set {key}: {owner}")
         try:
             json.dumps(value, allow_nan=False)
         except (TypeError, ValueError) as exc:

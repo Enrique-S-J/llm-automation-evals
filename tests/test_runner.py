@@ -717,6 +717,20 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
         ({"request": {"temperature": float("nan")}}, "request.temperature: Value error, must be a finite number"),
         ({"request": {"timeout_seconds": float("inf")}}, "request.timeout_seconds: Input should be a finite number"),
         ({"request": {"retry_delay_seconds": float("nan")}}, "request.retry_delay_seconds: Input should be a finite number"),
+        # extra_body is merged into the request last. These keys would
+        # replace what the harness sent while the report kept the old values.
+        (
+            {"request": {"extra_body": {"temperature": 1.5}}},
+            "request.extra_body: Value error, must not set temperature: request.temperature does that",
+        ),
+        (
+            {"request": {"extra_body": {"seed": 7, "model": "some-other-model"}}},
+            "request.extra_body: Value error, must not set model: the model comes from the environment",
+        ),
+        (
+            {"request": {"extra_body": {"messages": []}}},
+            "request.extra_body: Value error, must not set messages: the prompt is built from the task and the case",
+        ),
         # A reference is only followed when a reply reaches it, so a
         # misspelled one used to surface after every request had been made.
         (
