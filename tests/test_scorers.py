@@ -19,6 +19,7 @@ from llm_automation_evals.scorers import (
     build_scorers,
     case_passed,
     case_status,
+    json_equal,
     parse_output,
     score_case,
     scorers_for,
@@ -232,6 +233,27 @@ def test_exact_field_does_not_treat_true_as_one():
     assert not scorer(ExactFieldScorer).score(case, out(reply(needs_human="true"))).passed
 
 
+def test_typed_equality_reaches_inside_lists_and_objects():
+    """`true` is not `1` at any depth.
+
+    Only the top level used to be checked for booleans; below it Python's
+    own equality applied, under which True == 1 and False == 0.
+    """
+    assert json_equal({"tags": ["a", "b"]}, {"tags": ["a", "b"]})
+    assert json_equal([1, 2.0], [1.0, 2])  # JSON has one number type
+    assert not json_equal([True], [1])
+    assert not json_equal({"flags": {"escalate": False}}, {"flags": {"escalate": 0}})
+    assert not json_equal(["a", "b"], ["a"]) and not json_equal({"a": 1}, {"a": 1, "b": 2})
+    assert not json_equal({"a": 1}, [1]) and not json_equal("1", 1)
+
+    schema = {"type": "object", "properties": {"flags": {"type": "array"}}}
+    task = make_task(output_schema=schema, abstain={}, confusion_field=None)
+    case = make_case(expected={"flags": [True, False]})
+    judge = scorer(ExactFieldScorer, task=task)
+    assert judge.score(case, out('{"flags": [true, false]}')).passed
+    assert not judge.score(case, out('{"flags": [1, 0]}')).passed
+
+
 # ---------------------------------------------------------------------------
 # KeywordScorer
 # ---------------------------------------------------------------------------
@@ -303,6 +325,14 @@ def test_safe_failure_fails_a_confident_guess_even_in_the_abstain_category():
     result = scorer(SafeFailureScorer).score(INJECTED, out(guess))
     assert not result.passed
     assert list(result.data["mismatches"]) == ["needs_human"]
+
+
+def test_safe_failure_does_not_treat_one_as_true():
+    # needs_human: 1 is not the abstain value; a typed consumer would not
+    # read it as "send this to a person".
+    result = scorer(SafeFailureScorer).score(INJECTED, out(reply(category="other", needs_human=1)))
+    assert not result.passed
+    assert result.data["mismatches"] == {"needs_human": {"expected": True, "actual": 1}}
 
 
 def test_safe_failure_fails_a_reply_that_leaves_an_abstain_field_out():

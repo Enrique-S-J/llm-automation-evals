@@ -146,9 +146,13 @@ def parse_output(text: Optional[str]) -> ParsedOutput:
 
 
 def json_equal(left: Any, right: Any) -> bool:
-    """Equality as JSON sees it: `true` is not `1`."""
+    """Equality as JSON sees it: `true` is not `1`, at any depth."""
     if isinstance(left, bool) or isinstance(right, bool):
         return isinstance(left, bool) and isinstance(right, bool) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(json_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(json_equal, left, right))
     return left == right
 
 
