@@ -376,32 +376,32 @@ def prepare_out_dir(out_dir: Union[str, Path]) -> None:
         pass
 
 
-def _replace_file(path: Path, text: str) -> None:
-    """Write text to a sibling file, then move it over `path` in one step."""
-    scratch = path.with_name(f".{path.name}.tmp")
-    try:
-        # newline="" keeps "\n" as written on every platform.
-        scratch.write_text(text, encoding="utf-8", newline="")
-        os.replace(scratch, path)
-    except BaseException:
-        scratch.unlink(missing_ok=True)
-        raise
-
-
 def write_report(out_dir: Union[str, Path], report: Report) -> tuple[Path, Path]:
     """Write report.json and report.md into out_dir, creating it if needed.
 
-    Both files are rendered before either is touched, and each is replaced
-    whole. A failure part of the way through therefore leaves the previous
-    report, if there was one, exactly as it was, not half of a new one.
+    The two files are a pair. Both are rendered, then both are written to
+    scratch files beside their targets, and only then is each moved into
+    place. A failure before the moves leaves the previous report, if there
+    was one, exactly as it was, not half of a new one.
     """
     directory = Path(out_dir)
     directory.mkdir(parents=True, exist_ok=True)
     json_path = directory / REPORT_JSON
     md_path = directory / REPORT_MD
     rendered = [(json_path, render_json(report)), (md_path, render_markdown(report))]
-    for path, text in rendered:
-        _replace_file(path, text)
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for path, text in rendered:
+            scratch = path.with_name(f".{path.name}.tmp")
+            staged.append((scratch, path))
+            # newline="" keeps "\n" as written on every platform.
+            scratch.write_text(text, encoding="utf-8", newline="")
+        for scratch, path in staged:
+            os.replace(scratch, path)
+    except BaseException:
+        for scratch, _ in staged:
+            scratch.unlink(missing_ok=True)
+        raise
     return json_path, md_path
 
 

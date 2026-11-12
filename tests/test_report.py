@@ -406,6 +406,29 @@ def test_a_failed_write_leaves_the_previous_report_as_it_was(tmp_path, monkeypat
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
 
 
+def test_a_write_that_fails_on_the_second_file_leaves_both_as_they_were(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    write_report(tmp_path, build())
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    real_write = Path.write_text
+    calls = []
+
+    def disk_fills_up(self, *args, **kwargs):
+        calls.append(self.name)
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", disk_fills_up)
+    with pytest.raises(OSError):
+        write_report(tmp_path, build(outputs=CANDIDATE_OUTPUTS))
+    monkeypatch.undo()
+    assert len(calls) == 2
+    # Neither file changed, and no scratch file was left behind.
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
 def test_lone_surrogates_are_written_as_escapes_and_read_back_unchanged(tmp_path):
     half = "\ud83d"
     report = build(suite=make_suite(make_case("v1")), outputs=[out(reply(summary="cut off " + half), "v1")])
