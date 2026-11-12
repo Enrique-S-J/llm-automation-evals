@@ -1,0 +1,483 @@
+"""The command line, driven the way a user or a CI job drives it.
+
+Each test starts `python -m llm_automation_evals` as a subprocess and points
+it at a stub chat-completions server bound to 127.0.0.1. Nothing leaves the
+machine, but everything between the argument parser and the socket is the
+real thing: environment handling, httpx, the event loop, the files on disk.
+The mocked-transport tests in test_runner.py cannot show that the entry
+point itself works.
+
+The work directory has spaces in its name on purpose.
+"""
+
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+import yaml
+
+from helpers import oracle_reply
+from llm_automation_evals.runner import load_suite, render_prompt
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "ticket_classifier"
+API_KEY = "sk-stub-9f3a-not-a-real-key"
+JUDGE_MARKER = "You are grading"
+
+
+# ---------------------------------------------------------------------------
+# Stub endpoint
+# ---------------------------------------------------------------------------
+
+
+class Stub:
+    """A local OpenAI-compatible endpoint with scripted replies.
+
+    `replies` maps a case id to the reply text. `statuses` maps a case id to
+    an HTTP status to return instead. Every request is recorded.
+    """
+
+    def __init__(self, suite):
+        self.suite = suite
+        self.case_by_prompt = {render_prompt(suite.task, case): case for case in suite.cases}
+        self.replies = {case.id: oracle_reply(suite, case) for case in suite.cases}
+        self.statuses = {}
+        self.requests = []
+        self._lock = threading.Lock()
+        stub = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                status, payload = stub.respond(self.path, self.headers.get("Authorization"), body)
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.port = self.server.server_address[1]
+        self.base_url = f"http://127.0.0.1:{self.port}/v1"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def respond(self, path, authorization, body):
+        messages = body["messages"]
+        is_judge = messages[0]["content"].startswith(JUDGE_MARKER)
+        case = None if is_judge else self.case_by_prompt.get(messages[-1]["content"])
+        record = {
+            "path": path,
+            "authorization": authorization,
+            "body": body,
+            "judge": is_judge,
+            "case": case.id if case else None,
+        }
+        with self._lock:
+            self.requests.append(record)
+        if path != "/v1/chat/completions":
+            return 404, {"error": {"message": "not found"}}
+        if is_judge:
+            content = '{"score": 4, "reason": "Accurate and brief."}'
+        elif case is None:
+            return 400, {"error": {"message": "prompt did not match any case"}}
+        elif case.id in self.statuses:
+            return self.statuses[case.id], {"error": {"message": "scripted failure"}}
+        else:
+            content = self.replies[case.id]
+        return 200, {"choices": [{"index": 0, "message": {"role": "assistant", "content": content}}]}
+
+    def count(self, case_id=None, judge=False):
+        return sum(1 for r in self.requests if r["judge"] == judge and case_id in (None, r["case"]))
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def workdir(tmp_path):
+    """A directory with spaces in its path, holding a copy of the example suite."""
+    root = tmp_path / "eval work dir"
+    shutil.copytree(EXAMPLE, root / "ticket classifier")
+    return root
+
+
+@pytest.fixture
+def task_dir(workdir):
+    return workdir / "ticket classifier"
+
+
+@pytest.fixture
+def stub(task_dir):
+    server = Stub(load_suite(task_dir))
+    yield server
+    server.close()
+
+
+def cli(*args, cwd, stub=None, env=None):
+    """Run the CLI as a subprocess. The parent's EVAL_* and proxy settings are dropped."""
+    blocked = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("EVAL_") and key.lower() not in blocked
+    }
+    if stub is not None:
+        environment.update(EVAL_BASE_URL=stub.base_url, EVAL_MODEL="stub-model", EVAL_API_KEY=API_KEY)
+    environment.update(env or {})
+    return subprocess.run(
+        [sys.executable, "-m", "llm_automation_evals", *map(str, args)],
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def degrade(stub):
+    """Script four imperfect replies, one per kind of deviation."""
+    suite = stub.suite
+    by_id = {case.id: case for case in suite.cases}
+    # A wrong label on an ambiguous case.
+    stub.replies["net-07"] = oracle_reply(suite, by_id["net-07"], category="voice")
+    # A right answer wrapped in a code fence.
+    stub.replies["voice-03"] = "```json\n" + stub.replies["voice-03"] + "\n```"
+    # Prose where JSON was asked for.
+    stub.replies["infra-02"] = "I believe this is an infrastructure ticket, urgent."
+    # The injection in abstain-04, followed to the letter.
+    stub.replies["abstain-04"] = json.dumps(
+        {"category": "network", "priority": "urgent", "summary": "Dim display, code MARMOT-42.", "needs_human": False}
+    )
+
+
+def read(directory, name):
+    return (directory / name).read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# run
+# ---------------------------------------------------------------------------
+
+
+def test_run_scores_the_example_suite_and_writes_both_reports(workdir, task_dir, stub):
+    degrade(stub)
+    out_dir = workdir / "run one"
+    result = cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub)
+
+    assert result.returncode == 0, result.stderr
+    assert "ticket_classifier: 27/30 (90.0%) passed; 3 failed, 0 without model output" in result.stdout
+    assert "model: stub-model  endpoint host: 127.0.0.1" in result.stdout
+
+    report = json.loads(read(out_dir, "report.json"))
+    assert (report["task"], report["model"], report["endpoint_host"]) == ("ticket_classifier", "stub-model", "127.0.0.1")
+    assert report["totals"] == {
+        "cases": 30, "passed": 27, "failed": 3, "errors": 0,
+        "pass_rate": 0.9, "fenced_outputs": 1, "outputs": 30,
+    }
+    assert [c["id"] for c in report["cases"]] == [case.id for case in stub.suite.cases]
+    assert [c["id"] for c in report["cases"] if c["status"] == "failed"] == ["net-07", "infra-02", "abstain-04"]
+    # Raw output is saved for every case, passing or not.
+    assert {c["id"]: c["raw_output"] for c in report["cases"]} == stub.replies
+
+    markdown = read(out_dir, "report.md")
+    assert "**Pass rate: 27/30 (90.0%)**" in markdown
+    assert "| Model | `stub-model` |" in markdown
+    assert "| Endpoint host | `127.0.0.1` |" in markdown
+    assert "| Cases | 30 |" in markdown
+    assert "| `json_schema` | yes | 29 | 30 | 96.7% |" in markdown
+    assert "| `category_match` | yes | 22 | 24 | 91.7% |" in markdown
+    assert "| `safe_failure` | yes | 5 | 6 | 83.3% |" in markdown
+    # net-07 expected network, model said voice; infra-02 did not parse;
+    # abstain-04 expected other, model said network.
+    assert "| **network** | 1 | 6 | 0 | 0 | 0 |" in markdown
+    assert "| **infrastructure** | 0 | 0 | 6 | 0 | 1 |" in markdown
+    assert "| **other** | 0 | 1 | 0 | 9 | 0 |" in markdown
+    assert "### `net-07` (ambiguous)" in markdown
+    assert "| `category` | `network` | `voice` |" in markdown
+    assert "### `abstain-04` (expects abstain)" in markdown
+    assert "- `keyword` (required): `summary must not contain: marmot`" in markdown
+    assert "I believe this is an infrastructure ticket, urgent." in markdown
+    assert "- Replies wrapped in a code fence: 1 of 30" in markdown
+
+
+def test_run_sends_what_the_endpoint_contract_says(workdir, task_dir, stub):
+    result = cli("run", task_dir, "--out", workdir / "out", cwd=workdir, stub=stub)
+    assert result.returncode == 0, result.stderr
+
+    assert len(stub.requests) == 30
+    assert {r["path"] for r in stub.requests} == {"/v1/chat/completions"}
+    assert {r["authorization"] for r in stub.requests} == {f"Bearer {API_KEY}"}
+    assert {r["body"]["model"] for r in stub.requests} == {"stub-model"}
+    assert {r["body"]["temperature"] for r in stub.requests} == {0}
+    # One request per case, every case matched by its exact rendered prompt.
+    assert sorted(r["case"] for r in stub.requests) == sorted(case.id for case in stub.suite.cases)
+    # The judge is off unless asked for.
+    assert stub.count(judge=True) == 0
+    assert "llm_judge" not in read(workdir / "out", "report.json")
+
+
+def test_reports_hold_no_key_no_url_no_port_and_no_paths(workdir, task_dir, stub, tmp_path):
+    degrade(stub)
+    stub.statuses["voice-01"] = 401  # an error path, which is where a URL would leak
+    out_dir = workdir / "out"
+    result = cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub)
+    assert result.returncode == 3
+
+    for text in (read(out_dir, "report.json"), read(out_dir, "report.md")):
+        assert API_KEY not in text
+        assert stub.base_url not in text
+        assert str(stub.port) not in text
+        assert "/v1" not in text
+        assert str(tmp_path) not in text and "eval work dir" not in text
+    # The console may name the output directory it was given, but never the
+    # key or the endpoint URL.
+    for text in (result.stdout, result.stderr):
+        assert API_KEY not in text
+        assert stub.base_url not in text
+    assert json.loads(read(out_dir, "report.json"))["cases"][0]["error"] == "HTTP 401"
+
+
+def test_two_runs_over_identical_outputs_differ_only_in_the_timestamp(workdir, task_dir, stub):
+    degrade(stub)
+    first, second = workdir / "first", workdir / "second"
+    assert cli("run", task_dir, "--out", first, cwd=workdir, stub=stub).returncode == 0
+    time.sleep(1.1)  # timestamps have one-second resolution; make them differ
+    assert cli("run", task_dir, "--out", second, "--concurrency", "1", cwd=workdir, stub=stub).returncode == 0
+
+    for name, marker in (("report.json", '  "timestamp": "'), ("report.md", "| Timestamp (UTC) | ")):
+        before, after = read(first, name).splitlines(), read(second, name).splitlines()
+        assert len(before) == len(after)
+        changed = [(a, b) for a, b in zip(before, after) if a != b]
+        assert len(changed) == 1, changed
+        assert changed[0][0].startswith(marker) and changed[0][1].startswith(marker)
+
+
+def test_run_defaults_to_runs_task_name_under_the_working_directory(workdir, task_dir, stub):
+    result = cli("run", "ticket classifier", cwd=workdir, stub=stub)
+    assert result.returncode == 0, result.stderr
+    assert (workdir / "runs" / "ticket_classifier" / "report.md").is_file()
+    assert "report: runs/ticket_classifier/report.md" in result.stdout.replace("\\", "/")
+
+
+def test_run_exits_3_and_lists_the_case_when_a_request_keeps_failing(workdir, task_dir, stub):
+    stub.statuses["net-02"] = 500
+    out_dir = workdir / "out"
+    result = cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub)
+
+    assert result.returncode == 3
+    assert "net-02: HTTP 500, retrying once" in result.stderr
+    assert "Incomplete: 1 of 30 cases got no model output." in result.stderr
+    # One retry, so exactly two requests for that case and one for the rest.
+    assert stub.count("net-02") == 2
+    assert len(stub.requests) == 31
+
+    markdown = read(out_dir, "report.md")
+    assert "**Pass rate: 29/30 (96.7%)**" in markdown
+    assert "- `net-02`: HTTP 500 (after 1 retry)" in markdown.split("## Errors")[1]
+    assert "## Failures\n\nNone." in markdown
+
+
+def test_run_against_nothing_listening_reports_every_case_as_an_error(workdir, task_dir):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = {"EVAL_BASE_URL": f"http://127.0.0.1:{port}/v1", "EVAL_MODEL": "stub-model"}
+    result = cli("run", task_dir, "--out", workdir / "out", cwd=workdir, env=env)
+
+    assert result.returncode == 3
+    assert "Traceback" not in result.stderr
+    report = json.loads(read(workdir / "out", "report.json"))
+    assert report["totals"]["errors"] == 30
+    assert {c["error"] for c in report["cases"]} == {"request failed (ConnectError)"}
+
+
+def test_fail_under_turns_the_pass_rate_into_an_exit_code(workdir, task_dir, stub):
+    degrade(stub)  # 90.0%
+    below = cli("run", task_dir, "--out", workdir / "a", "--fail-under", "95", cwd=workdir, stub=stub)
+    assert below.returncode == 1
+    assert "Pass rate is below --fail-under 95." in below.stderr
+    met = cli("run", task_dir, "--out", workdir / "b", "--fail-under", "90", cwd=workdir, stub=stub)
+    assert met.returncode == 0
+
+
+def test_judge_flag_adds_one_judge_request_per_gradable_case(workdir, task_dir, stub):
+    out_dir = workdir / "out"
+    result = cli("run", task_dir, "--out", out_dir, "--judge", cwd=workdir, stub=stub)
+    assert result.returncode == 0, result.stderr
+
+    # 24 ordinary cases are graded; the 6 abstain cases are not.
+    assert stub.count(judge=False) == 30
+    assert stub.count(judge=True) == 24
+    report = json.loads(read(out_dir, "report.json"))
+    assert report["judge_enabled"] is True and report["judge_model"] == "stub-model"
+    judge = next(s for s in report["by_scorer"] if s["scorer"] == "llm_judge")
+    assert judge == {"scorer": "llm_judge", "required": False, "applicable": 24, "passed": 24, "pass_rate": 1.0}
+    assert "| `llm_judge` | no | 24 | 24 | 100.0% |" in read(out_dir, "report.md")
+
+
+# ---------------------------------------------------------------------------
+# Configuration errors: exit 2, an explanation, no traceback
+# ---------------------------------------------------------------------------
+
+
+def test_missing_endpoint_variables_exit_2_with_instructions(workdir, task_dir):
+    result = cli("run", task_dir, cwd=workdir)
+    assert result.returncode == 2
+    assert result.stderr.startswith("Error: EVAL_BASE_URL and EVAL_MODEL must be set.")
+    assert "Traceback" not in result.stderr
+    assert not (workdir / "runs").exists()
+
+
+def test_a_broken_suite_exits_2_before_any_request(workdir, task_dir, stub):
+    cases = yaml.safe_load(read(task_dir, "cases.yaml"))
+    cases["cases"][0]["expect_abstian"] = True
+    (task_dir / "cases.yaml").write_text(yaml.safe_dump(cases), encoding="utf-8")
+
+    result = cli("run", task_dir, cwd=workdir, stub=stub)
+    assert result.returncode == 2
+    assert "Error: cases.yaml case voice-01 is invalid" in result.stderr
+    assert "expect_abstian: Extra inputs are not permitted" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert stub.requests == []
+
+
+def test_a_missing_task_directory_exits_2(workdir):
+    result = cli("run", workdir / "no such suite", cwd=workdir)
+    assert result.returncode == 2
+    assert "does not exist or is not a directory" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_no_arguments_prints_usage(workdir):
+    result = cli(cwd=workdir)
+    assert result.returncode == 2
+    assert "usage: python -m llm_automation_evals" in result.stderr
+    assert "{run,report,compare}" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# report: re-score a saved run offline
+# ---------------------------------------------------------------------------
+
+
+def test_report_rescoring_is_offline_and_reproduces_the_run_exactly(workdir, task_dir, stub):
+    degrade(stub)
+    out_dir = workdir / "saved run"
+    assert cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub).returncode == 0
+    original = {name: read(out_dir, name) for name in ("report.json", "report.md")}
+    requests_before = len(stub.requests)
+
+    # No stub and no EVAL_* variables: `report` must not need an endpoint.
+    copy = workdir / "re scored"
+    result = cli("report", task_dir, out_dir, "--out", copy, cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    assert "ticket_classifier: 27/30 (90.0%) passed" in result.stdout
+    assert len(stub.requests) == requests_before
+    assert {name: read(copy, name) for name in original} == original
+
+
+def test_report_rescores_against_the_suite_as_it_is_now(workdir, task_dir, stub):
+    degrade(stub)
+    out_dir = workdir / "saved run"
+    assert cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub).returncode == 0
+
+    # Decide the ambiguous net-07 should accept the model's answer after all.
+    cases = yaml.safe_load(read(task_dir, "cases.yaml"))
+    net07 = next(case for case in cases["cases"] if case["id"] == "net-07")
+    net07["expected"]["category"] = "voice"
+    (task_dir / "cases.yaml").write_text(yaml.safe_dump(cases, sort_keys=False), encoding="utf-8")
+
+    result = cli("report", task_dir, out_dir / "report.json", cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    # Written back next to the source report, with the original run's metadata.
+    report = json.loads(read(out_dir, "report.json"))
+    assert report["totals"]["passed"] == 28
+    assert report["model"] == "stub-model"
+    assert [c["id"] for c in report["cases"] if c["status"] == "failed"] == ["infra-02", "abstain-04"]
+    assert "**Pass rate: 28/30 (93.3%)**" in read(out_dir, "report.md")
+
+
+def test_report_without_a_saved_run_exits_2(workdir, task_dir):
+    result = cli("report", task_dir, cwd=workdir)
+    assert result.returncode == 2
+    assert "Error: no saved run at 'runs/ticket_classifier'. Run the suite first" in result.stderr.replace("\\", "/")
+    assert "Traceback" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# compare
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_runs(workdir, task_dir, stub):
+    """A baseline with net-07 wrong, and a candidate that fixes it and breaks voice-02."""
+    suite = stub.suite
+    by_id = {case.id: case for case in suite.cases}
+    baseline, candidate = workdir / "runs" / "base line", workdir / "runs" / "candidate"
+
+    stub.replies["net-07"] = oracle_reply(suite, by_id["net-07"], category="voice")
+    assert cli("run", task_dir, "--out", baseline, cwd=workdir, stub=stub).returncode == 0
+
+    stub.replies["net-07"] = oracle_reply(suite, by_id["net-07"])
+    stub.replies["voice-02"] = oracle_reply(suite, by_id["voice-02"], priority="normal")
+    assert cli("run", task_dir, "--out", candidate, cwd=workdir, stub=stub, env={"EVAL_MODEL": "stub-model-v2"}).returncode == 0
+    return baseline, candidate
+
+
+def test_compare_prints_regressions_first_and_exits_1(workdir, two_runs):
+    baseline, candidate = two_runs
+    result = cli("compare", baseline / "report.json", candidate / "report.json", cwd=workdir)
+
+    assert result.returncode == 1
+    text = result.stdout
+    assert "**1 regression, 1 fix.** Pass rate 96.7% -> 96.7% (0.0 pts)." in text
+    assert text.index("## Regressions (1)") < text.index("## Fixes (1)") < text.index("## Score deltas")
+    assert (
+        "- `voice-02`: now fails `priority_match`; `priority` expected `urgent`, was `urgent`, now `normal`"
+        in text
+    )
+    assert (
+        "- `net-07` (ambiguous case): used to fail `category_match`; "
+        "`category` expected `network`, was `voice`, now `network`" in text
+    )
+    assert "- Baseline: `stub-model` at `127.0.0.1`" in text
+    assert "- Candidate: `stub-model-v2` at `127.0.0.1`" in text
+    assert "| `priority_match` | 100.0% | 95.7% | -4.3 pts |" in text
+
+
+def test_compare_accepts_run_directories_and_can_write_a_file(workdir, two_runs):
+    baseline, candidate = two_runs
+    target = workdir / "pr comment" / "comparison.md"
+    result = cli("compare", baseline, candidate, "--exit-zero", "--out", target, cwd=workdir)
+    assert result.returncode == 0
+    assert read(target.parent, target.name) == result.stdout
+
+
+def test_compare_exits_0_when_nothing_regressed(workdir, two_runs):
+    baseline, _ = two_runs
+    result = cli("compare", baseline, baseline, cwd=workdir)
+    assert result.returncode == 0
+    assert "**0 regressions, 0 fixes.**" in result.stdout
+    assert "## Regressions (0)\n\nNone." in result.stdout
+
+
+def test_compare_with_a_missing_report_exits_2(workdir, two_runs):
+    baseline, _ = two_runs
+    result = cli("compare", baseline, workdir / "nope.json", cwd=workdir)
+    assert result.returncode == 2
+    assert "does not exist" in result.stderr
+    assert "Traceback" not in result.stderr

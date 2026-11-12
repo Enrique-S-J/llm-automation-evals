@@ -98,3 +98,17 @@ def completion(content: Any) -> httpx.Response:
             ],
         },
     )
+
+
+def oracle_reply(suite: Suite, case: Case, **overrides: Any) -> str:
+    """What a model that agrees with every label in the suite would say."""
+    body = {"category": "other", "priority": "normal", "summary": "", "needs_human": False}
+    if case.expect_abstain:
+        body.update(suite.task.abstain, summary="Cannot classify this ticket.")
+    else:
+        body.update(case.expected)
+        terms = case.keywords.must_contain if case.keywords else []
+        words = [term if isinstance(term, str) else term[0] for term in terms]
+        body["summary"] = " ".join(["Ticket about", *words]) + "."
+    body.update(overrides)
+    return json.dumps(body)

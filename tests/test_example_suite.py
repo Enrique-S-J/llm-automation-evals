@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from helpers import oracle_reply
 from llm_automation_evals.models import RawOutput
 from llm_automation_evals.report import build_report
 from llm_automation_evals.runner import load_suite, render_prompt
@@ -28,20 +29,6 @@ DOCUMENTATION_NETWORKS = [
 @pytest.fixture(scope="module")
 def suite():
     return load_suite(EXAMPLE)
-
-
-def oracle_reply(suite, case, **overrides):
-    """What a model that agrees with every label would say."""
-    body = {"category": "other", "priority": "normal", "summary": "", "needs_human": False}
-    if case.expect_abstain:
-        body.update(suite.task.abstain, summary="Cannot classify this ticket.")
-    else:
-        body.update(case.expected)
-        terms = case.keywords.must_contain if case.keywords else []
-        words = [term if isinstance(term, str) else term[0] for term in terms]
-        body["summary"] = " ".join(["Ticket about", *words]) + "."
-    body.update(overrides)
-    return json.dumps(body)
 
 
 def test_thirty_cases_across_all_four_categories(suite):
