@@ -24,6 +24,9 @@ class Flip:
     baseline_actual: Optional[dict[str, Any]]
     candidate_actual: Optional[dict[str, Any]]
     ambiguous: bool = False
+    # False when the model said exactly the same thing in both reports, which
+    # means the flip came from a change to the suite, not to the model.
+    output_changed: bool = True
 
 
 @dataclass(frozen=True)
@@ -89,13 +92,14 @@ def compare_reports(baseline: Report, candidate: Report) -> Comparison:
         if "error" in pair:
             result.not_comparable.append((case.id, old.status, case.status))
             continue
+        changed = old.raw_output != case.raw_output
         if pair == ("passed", "failed"):
             result.regressions.append(
-                Flip(case.id, _failing(case), case.expected, old.actual, case.actual, case.ambiguous)
+                Flip(case.id, _failing(case), case.expected, old.actual, case.actual, case.ambiguous, changed)
             )
         elif pair == ("failed", "passed"):
             result.fixes.append(
-                Flip(case.id, _failing(old), case.expected, old.actual, case.actual, case.ambiguous)
+                Flip(case.id, _failing(old), case.expected, old.actual, case.actual, case.ambiguous, changed)
             )
         elif pair == ("failed", "failed"):
             result.still_failing.append(case.id)
@@ -149,6 +153,8 @@ def _flip_line(flip: Flip, failed_side: str) -> str:
                 f"was {_shown(flip.baseline_actual, name)}, now {_shown(flip.candidate_actual, name)}"
             )
     detail = "; " + "; ".join(changes) if changes else ""
+    if not flip.output_changed:
+        detail += "; the model's output is identical in both reports, so the suite changed, not the model"
     return f"- `{flip.case_id}`{tag}: {failed_side} {scorers}{detail}"
 
 

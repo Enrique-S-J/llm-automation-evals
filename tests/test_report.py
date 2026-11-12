@@ -424,6 +424,28 @@ def test_compare_reports_score_deltas_in_percentage_points():
     assert "## Regressions (0)\n\nNone." in text
 
 
+def test_compare_says_when_a_flip_comes_from_the_suite_and_not_the_model():
+    """Same outputs, a relabelled case: a regression, but not the model's doing."""
+    relabelled = [
+        case.model_copy(update={"expected": {"category": "voice", "priority": "high"}})
+        if case.id == "v1"
+        else case
+        for case in SUITE.cases
+    ]
+    comparison = compare_reports(build(), build(suite=make_suite(*relabelled)))
+    (flip,) = comparison.regressions
+    assert (flip.case_id, flip.failing, flip.output_changed) == ("v1", ["priority_match"], False)
+    assert (
+        "- `v1`: now fails `priority_match`; the model's output is identical in both reports, "
+        "so the suite changed, not the model"
+    ) in render_comparison(comparison)
+
+    # When the output did change, the line reports the field values instead.
+    changed = compare_reports(build(), build(outputs=CANDIDATE_OUTPUTS))
+    assert changed.regressions[0].output_changed is True
+    assert "suite changed" not in render_comparison(changed)
+
+
 def test_compare_does_not_call_an_outage_a_regression():
     # v1 passed in the baseline and got no reply in the candidate.
     candidate = build(outputs=[RawOutput(case_id="v1", error="HTTP 503 (after 1 retry)"), *OUTPUTS[1:]])
