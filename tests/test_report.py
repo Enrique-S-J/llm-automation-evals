@@ -310,6 +310,38 @@ def test_written_files_round_trip_and_carry_no_paths(tmp_path):
         assert str(tmp_path) not in text and "run output" not in text
 
 
+def test_a_failed_write_leaves_the_previous_report_as_it_was(tmp_path, monkeypatch):
+    """report.json and report.md are a pair and are replaced, never edited.
+
+    Rendering used to happen while the files were being written, so a failure
+    in the second file left a new report.json beside a stale report.md, and a
+    failure while encoding left report.json empty.
+    """
+    import llm_automation_evals.report as report_module
+
+    write_report(tmp_path, build())
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    assert sorted(before) == ["report.json", "report.md"]
+
+    def broken(report):
+        raise RuntimeError("renderer failed")
+
+    monkeypatch.setattr(report_module, "render_markdown", broken)
+    with pytest.raises(RuntimeError):
+        write_report(tmp_path, build(outputs=CANDIDATE_OUTPUTS))
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
+def test_lone_surrogates_are_written_as_escapes_and_read_back_unchanged(tmp_path):
+    half = "\ud83d"
+    report = build(suite=make_suite(make_case("v1")), outputs=[out(reply(summary="cut off " + half), "v1")])
+    json_path, md_path = write_report(tmp_path, report)
+    assert "cut off \\ud83d" in json_path.read_text(encoding="utf-8")
+    assert load_report(json_path) == report
+    assert load_report(json_path).cases[0].actual["summary"] == "cut off " + half
+    md_path.read_text(encoding="utf-8")  # decodes, so it was written as valid UTF-8
+
+
 def test_rescoring_a_saved_report_reproduces_it_exactly():
     report = build()
     again = build_report(

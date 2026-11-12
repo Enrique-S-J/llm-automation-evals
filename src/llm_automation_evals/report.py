@@ -11,6 +11,7 @@ paths, because each of those would break that.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -179,8 +180,20 @@ def _confusion(suite: Suite, results: list[CaseResult]) -> Optional[Confusion]:
 # ---------------------------------------------------------------------------
 
 
+def encodable(text: str) -> str:
+    """Write lone surrogates as `\\udXXX` so the text can be encoded as UTF-8.
+
+    A reply that stops in the middle of an emoji carries half of a surrogate
+    pair, and UTF-8 has no encoding for one. Every renderer returns its text
+    through here, so a report can always be written. In report.json the
+    result is the JSON escape for the same code unit, so the file reads back
+    to exactly the value that was saved.
+    """
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def render_json(report: Report) -> str:
-    return json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
+    return encodable(json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n")
 
 
 def fraction(passed: int, total: int) -> str:
@@ -321,7 +334,7 @@ def render_markdown(report: Report) -> str:
         lines += [f"- `{r.id}` `{s.scorer}`: {code_span(s.detail, limit=300)}" for r, s in advisory]
         lines.append("")
 
-    return "\n".join(lines).rstrip("\n") + "\n"
+    return encodable("\n".join(lines).rstrip("\n") + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -329,15 +342,32 @@ def render_markdown(report: Report) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _replace_file(path: Path, text: str) -> None:
+    """Write text to a sibling file, then move it over `path` in one step."""
+    scratch = path.with_name(f".{path.name}.tmp")
+    try:
+        # newline="" keeps "\n" as written on every platform.
+        scratch.write_text(text, encoding="utf-8", newline="")
+        os.replace(scratch, path)
+    except BaseException:
+        scratch.unlink(missing_ok=True)
+        raise
+
+
 def write_report(out_dir: Union[str, Path], report: Report) -> tuple[Path, Path]:
-    """Write report.json and report.md into out_dir, creating it if needed."""
+    """Write report.json and report.md into out_dir, creating it if needed.
+
+    Both files are rendered before either is touched, and each is replaced
+    whole. A failure part of the way through therefore leaves the previous
+    report, if there was one, exactly as it was, not half of a new one.
+    """
     directory = Path(out_dir)
     directory.mkdir(parents=True, exist_ok=True)
     json_path = directory / REPORT_JSON
     md_path = directory / REPORT_MD
-    # newline="" keeps "\n" as written on every platform.
-    json_path.write_text(render_json(report), encoding="utf-8", newline="")
-    md_path.write_text(render_markdown(report), encoding="utf-8", newline="")
+    rendered = [(json_path, render_json(report)), (md_path, render_markdown(report))]
+    for path, text in rendered:
+        _replace_file(path, text)
     return json_path, md_path
 
 

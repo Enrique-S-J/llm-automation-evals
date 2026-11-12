@@ -305,6 +305,40 @@ def test_run_against_nothing_listening_reports_every_case_as_an_error(workdir, t
     assert {c["error"] for c in report["cases"]} == {"request failed (ConnectError)"}
 
 
+def test_a_reply_holding_half_a_surrogate_pair_is_saved_and_reported(workdir, task_dir, stub):
+    """Generation that stops in the middle of an emoji leaves a lone surrogate.
+
+    UTF-8 cannot encode one, and the report used to be written with the
+    surrogate in it: the run crashed after every request had been made and
+    left a zero-byte report.json behind. Both routes are covered: the escape
+    inside the model's own JSON, and the surrogate in the reply text itself.
+    """
+    suite = stub.suite
+    by_id = {case.id: case for case in suite.cases}
+    half = "\ud83d"
+    stub.replies["voice-01"] = oracle_reply(suite, by_id["voice-01"], summary="Desk phone is dead " + half)
+    stub.replies["voice-02"] = "Not JSON, and cut off mid-emoji " + half
+    out_dir = workdir / "out"
+    result = cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub)
+
+    assert "Traceback" not in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "ticket_classifier: 29/30 (96.7%) passed; 1 failed" in result.stdout
+
+    # report.json reads back to exactly what the model said.
+    cases = {c["id"]: c for c in json.loads(read(out_dir, "report.json"))["cases"]}
+    assert cases["voice-01"]["status"] == "passed"
+    assert cases["voice-01"]["actual"]["summary"] == "Desk phone is dead " + half
+    assert cases["voice-02"]["raw_output"] == stub.replies["voice-02"]
+    assert "Not JSON, and cut off mid-emoji \\ud83d" in read(out_dir, "report.md")
+
+    # The saved run still re-scores to the same bytes, and compare can print it.
+    original = {name: read(out_dir, name) for name in ("report.json", "report.md")}
+    assert cli("report", task_dir, out_dir, cwd=workdir).returncode == 0
+    assert {name: read(out_dir, name) for name in original} == original
+    assert cli("compare", out_dir, out_dir, cwd=workdir).returncode == 0
+
+
 def test_fail_under_turns_the_pass_rate_into_an_exit_code(workdir, task_dir, stub):
     degrade(stub)  # 90.0%
     below = cli("run", task_dir, "--out", workdir / "a", "--fail-under", "95", cwd=workdir, stub=stub)

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .models import CaseResult, Report
-from .report import code_span, fraction
+from .report import code_span, encodable, fraction
 
 
 @dataclass(frozen=True)
@@ -231,4 +231,4 @@ def render_comparison(comparison: Comparison) -> str:
         if comparison.removed:
             lines.append("- Removed: " + ", ".join(f"`{c}`" for c in comparison.removed))
 
-    return "\n".join(lines).rstrip("\n") + "\n"
+    return encodable("\n".join(lines).rstrip("\n") + "\n")
