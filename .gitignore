@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.DS_Store
+
+# Default output directory of `python -m llm_automation_evals run`.
+# Reports worth keeping are committed deliberately, from somewhere else.
+runs/
