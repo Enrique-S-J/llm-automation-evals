@@ -61,6 +61,9 @@ def test_unfenced_json_is_not_recorded_as_fenced():
         'Here you go:\n```json\n{"a": 1}\n```',  # prose before the fence
         '{"a": 1}\nHope that helps!',  # prose after the object
         '{"a": NaN}',  # accepted by json.loads by default, not JSON
+        '{"a": 1e999}',  # parses to infinity, which JSON cannot represent
+        "[" * 65 + "]" * 65,  # one level past the nesting limit
+        "[" * 100_000 + "]" * 100_000,  # deep enough to exhaust the parser's stack
         "",
     ],
 )
@@ -68,6 +71,12 @@ def test_anything_that_is_not_strict_json_is_a_parse_error(text):
     parsed = parse_output(text)
     assert parsed.error
     assert parsed.obj is None
+
+
+def test_nesting_up_to_the_limit_still_parses():
+    parsed = parse_output('{"a":' * 64 + "1" + "}" * 64)
+    assert parsed.error is None and parsed.obj is not None
+    assert parse_output('{"a":' * 65 + "1" + "}" * 65).error == "JSON is nested more than 64 levels deep"
 
 
 # ---------------------------------------------------------------------------

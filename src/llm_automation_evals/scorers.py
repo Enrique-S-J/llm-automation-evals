@@ -9,6 +9,7 @@ the output, so scoring a saved run stays offline and repeatable.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
@@ -23,6 +24,12 @@ from .models import Case, ConfigError, RawOutput, ScoreResult, ScorerSpec, Task
 _FENCED = re.compile(r"\A\s*```(?:[A-Za-z0-9_+-]*\s)?\s*(.*?)\s*```\s*\Z", re.DOTALL)
 
 _DETAIL_LIMIT = 300
+
+# Deepest nesting of objects and arrays accepted in a reply. The output of
+# an automation is a small record. A reply nested hundreds of levels deep is
+# valid JSON syntax, and it exhausts the stack of whatever walks it next:
+# the schema validator, or the serializer that writes the report.
+MAX_DEPTH = 64
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,28 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
 
 
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        # 1e999 is valid syntax and parses to infinity, which no JSON
+        # document can hold once it is written out again.
+        raise ValueError("a number is too large to represent")
+    return value
+
+
+def _too_deep(value: Any) -> bool:
+    """Whether objects and arrays nest more than MAX_DEPTH levels. Iterative."""
+    pending = [(value, 1)]
+    while pending:
+        node, depth = pending.pop()
+        if isinstance(node, (dict, list)):
+            if depth > MAX_DEPTH:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            pending.extend((child, depth + 1) for child in children)
+    return False
+
+
 def parse_output(text: Optional[str]) -> ParsedOutput:
     """Parse a model reply as JSON, stripping one enclosing code fence.
 
@@ -53,12 +82,19 @@ def parse_output(text: Optional[str]) -> ParsedOutput:
         return ParsedOutput(error="no output")
     match = _FENCED.match(text)
     body = match.group(1) if match else text
+    fenced = bool(match)
     try:
         # json.loads accepts NaN and Infinity by default; strict JSON does not.
-        value = json.loads(body, parse_constant=_reject_constant)
+        value = json.loads(body, parse_constant=_reject_constant, parse_float=_finite_float)
     except ValueError as exc:
-        return ParsedOutput(fenced=bool(match), error=str(exc))
-    return ParsedOutput(value=value, fenced=bool(match))
+        return ParsedOutput(fenced=fenced, error=str(exc))
+    except RecursionError:
+        # Some Python versions parse recursively and give up before the
+        # depth check below can run.
+        return ParsedOutput(fenced=fenced, error="JSON is nested too deeply to parse")
+    if _too_deep(value):
+        return ParsedOutput(fenced=fenced, error=f"JSON is nested more than {MAX_DEPTH} levels deep")
+    return ParsedOutput(value=value, fenced=fenced)
 
 
 def json_equal(left: Any, right: Any) -> bool:

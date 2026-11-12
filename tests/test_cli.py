@@ -339,6 +339,30 @@ def test_a_reply_holding_half_a_surrogate_pair_is_saved_and_reported(workdir, ta
     assert cli("compare", out_dir, out_dir, cwd=workdir).returncode == 0
 
 
+def test_replies_built_to_break_a_parser_are_failures_not_crashes(workdir, task_dir, stub):
+    """Deep nesting and out-of-range numbers are valid JSON syntax.
+
+    Each of these used to end the run in a traceback after every request had
+    been made: the parser, the schema validator or the report serializer ran
+    out of stack on the nested ones.
+    """
+    stub.replies["voice-01"] = '{"a":' * 500 + "1" + "}" * 500
+    stub.replies["voice-02"] = "[" * 100_000 + "]" * 100_000
+    stub.replies["voice-03"] = '{"category": "voice", "priority": 1e999, "summary": "voicemail", "needs_human": false}'
+    out_dir = workdir / "out"
+    result = cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub)
+
+    assert "Traceback" not in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "ticket_classifier: 27/30 (90.0%) passed; 3 failed" in result.stdout
+    cases = {c["id"]: c for c in json.loads(read(out_dir, "report.json"))["cases"]}
+    for case_id in ("voice-01", "voice-02", "voice-03"):
+        assert cases[case_id]["status"] == "failed"
+        assert cases[case_id]["actual"] is None
+        assert cases[case_id]["raw_output"] == stub.replies[case_id]
+        assert cases[case_id]["scores"][0]["detail"].startswith("not valid JSON: ")
+
+
 def test_fail_under_turns_the_pass_rate_into_an_exit_code(workdir, task_dir, stub):
     degrade(stub)  # 90.0%
     below = cli("run", task_dir, "--out", workdir / "a", "--fail-under", "95", cwd=workdir, stub=stub)
