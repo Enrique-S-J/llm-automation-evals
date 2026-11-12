@@ -213,10 +213,16 @@ def render_json(report: Report) -> str:
     return encodable(json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n")
 
 
+def percent(passed: int, total: int) -> str:
+    """A pass rate for display. Always from the counts, so that every place
+    a rate is printed rounds the same number the same way."""
+    return f"{100 * passed / total:.1f}%" if total else "n/a"
+
+
 def fraction(passed: int, total: int) -> str:
     if not total:
         return "n/a (0 cases)"
-    return f"{passed}/{total} ({100 * passed / total:.1f}%)"
+    return f"{passed}/{total} ({percent(passed, total)})"
 
 
 def code_span(value: Any, limit: int = 80, *, in_table: bool = True) -> str:
@@ -297,10 +303,9 @@ def render_markdown(report: Report) -> str:
         "|---|---|---|---|---|",
     ]
     for summary in report.by_scorer:
-        rate = "n/a" if summary.pass_rate is None else f"{100 * summary.passed / summary.applicable:.1f}%"
         lines.append(
             f"| `{summary.scorer}` | {'yes' if summary.required else 'no'} | "
-            f"{summary.passed} | {summary.applicable} | {rate} |"
+            f"{summary.passed} | {summary.applicable} | {percent(summary.passed, summary.applicable)} |"
         )
 
     if report.confusion is not None:

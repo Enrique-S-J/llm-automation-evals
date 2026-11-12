@@ -630,13 +630,35 @@ def test_compare_reports_score_deltas_in_percentage_points():
     comparison = compare_reports(build(), candidate)
     assert comparison.regressions == []
     deltas = {d.name: (d.baseline, d.candidate) for d in comparison.deltas}
-    assert deltas["overall"] == (0.4286, 0.5714)
-    assert deltas["category_match"] == (0.5, 0.75)
+    assert deltas["overall"] == ((3, 7), (4, 7))
+    assert deltas["category_match"] == ((2, 4), (3, 4))
     text = render_comparison(comparison)
     assert "**0 regressions, 1 fix.** Pass rate 42.9% -> 57.1% (+14.3 pts)." in text
     assert "| `category_match` | 50.0% | 75.0% | +25.0 pts |" in text
     assert "| `json_schema` | 83.3% | 83.3% | 0.0 pts |" in text
     assert "## Regressions (0)\n\nNone." in text
+
+
+def test_compare_and_the_report_print_the_same_percentage_for_the_same_run():
+    """14 of 17 is 82.35...%, which the report prints as 82.4%.
+
+    compare formatted the pass rate stored in report.json, which is rounded
+    to four places: 0.8235 times 100 is 82.35 in name and 82.3499... in
+    binary, so the same run read 82.3% there. For 15 of 19, the denominator
+    of needs_human_match in the example suite, it was 78.9% against 79.0%.
+    Both now come from the counts.
+    """
+    for passed, total in ((14, 17), (15, 19), (5, 6), (1, 3)):
+        cases = [make_case(f"c{n}") for n in range(total)]
+        outputs = [out(reply() if n < passed else reply(category="network"), f"c{n}") for n in range(total)]
+        report = build(suite=make_suite(*cases), outputs=outputs)
+        shown = f"{100 * passed / total:.1f}%"
+        assert f"**Pass rate: {passed}/{total} ({shown})**" in render_markdown(report)
+        assert f"| `category_match` | yes | {passed} | {total} | {shown} |" in render_markdown(report)
+        text = render_comparison(compare_reports(report, report))
+        assert f"Pass rate {shown} -> {shown} (0.0 pts)." in text
+        assert f"| **overall** | {shown} | {shown} | 0.0 pts |" in text
+        assert f"| `category_match` | {shown} | {shown} | 0.0 pts |" in text
 
 
 def test_compare_says_when_a_flip_comes_from_the_suite_and_not_the_model():

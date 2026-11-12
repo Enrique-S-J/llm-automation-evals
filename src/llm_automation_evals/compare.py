@@ -7,10 +7,14 @@ has about a prompt or model change: what used to work that no longer does.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Any, Optional
 
 from .models import CaseResult, Report
-from .report import code_span, encodable, fraction
+from .report import code_span, encodable, fraction, percent
+
+# How many passed, out of how many.
+Counts = tuple[int, int]
 
 
 def _span(value: Any) -> str:
@@ -39,15 +43,24 @@ class Flip:
 
 @dataclass(frozen=True)
 class Delta:
+    """A pass rate on each side, kept as counts.
+
+    report.json also stores each rate as a fraction rounded to four places.
+    Printing from that gave 82.3% here for a run the report itself calls
+    82.4% (14 of 17), so the counts are carried and the rate is worked out
+    from them where it is shown. None means that side has no such scorer.
+    """
+
     name: str
-    baseline: Optional[float]
-    candidate: Optional[float]
+    baseline: Optional[Counts]
+    candidate: Optional[Counts]
 
     @property
-    def change(self) -> Optional[float]:
-        if self.baseline is None or self.candidate is None:
+    def change(self) -> Optional[Fraction]:
+        """Candidate rate minus baseline rate, exact; None if either is undefined."""
+        if not (self.baseline and self.baseline[1] and self.candidate and self.candidate[1]):
             return None
-        return self.candidate - self.baseline
+        return Fraction(*self.candidate) - Fraction(*self.baseline)
 
 
 @dataclass
@@ -113,22 +126,28 @@ def compare_reports(baseline: Report, candidate: Report) -> Comparison:
         elif pair == ("failed", "failed"):
             result.still_failing.append(case.id)
 
-    result.deltas.append(Delta("overall", baseline.totals.pass_rate, candidate.totals.pass_rate))
-    base_scorers = {s.scorer: s.pass_rate for s in baseline.by_scorer}
-    cand_scorers = {s.scorer: s.pass_rate for s in candidate.by_scorer}
+    result.deltas.append(
+        Delta(
+            "overall",
+            (baseline.totals.passed, baseline.totals.cases),
+            (candidate.totals.passed, candidate.totals.cases),
+        )
+    )
+    base_scorers = {s.scorer: (s.passed, s.applicable) for s in baseline.by_scorer}
+    cand_scorers = {s.scorer: (s.passed, s.applicable) for s in candidate.by_scorer}
     for name in list(cand_scorers) + [n for n in base_scorers if n not in cand_scorers]:
         result.deltas.append(Delta(name, base_scorers.get(name), cand_scorers.get(name)))
     return result
 
 
-def _percent(rate: Optional[float]) -> str:
-    return "n/a" if rate is None else f"{100 * rate:.1f}%"
+def _percent(counts: Optional[Counts]) -> str:
+    return "n/a" if counts is None else percent(*counts)
 
 
-def _points(change: Optional[float]) -> str:
+def _points(change: Optional[Fraction]) -> str:
     if change is None:
         return "n/a"
-    return f"{100 * change:+.1f} pts" if abs(change) >= 0.0005 else "0.0 pts"
+    return f"{100 * float(change):+.1f} pts" if abs(change) >= Fraction(5, 10000) else "0.0 pts"
 
 
 def _count(count: int, singular: str, plural: str) -> str:
