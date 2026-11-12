@@ -25,6 +25,7 @@ from .report import (
     fraction,
     load_report,
     outputs_from_report,
+    prepare_out_dir,
     utc_timestamp,
     write_report,
 )
@@ -126,11 +127,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cannot_write(out_dir: Path, exc: OSError) -> ConfigError:
+    return ConfigError(f"cannot write the report to '{out_dir}': {exc.strerror}")
+
+
 def _finish(report: Report, out_dir: Path, fail_under: Optional[float]) -> int:
     try:
         json_path, md_path = write_report(out_dir, report)
     except OSError as exc:
-        raise ConfigError(f"cannot write the report to '{out_dir}': {exc.strerror}") from None
+        raise _cannot_write(out_dir, exc) from None
     totals = report.totals
     print(
         f"{report.task}: {fraction(totals.passed, totals.cases)} passed; "
@@ -155,6 +160,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     suite = load_suite(args.task_dir)
     endpoint = Endpoint.from_env(suite.task.endpoint)
     out_dir = Path(args.out) if args.out else Path(DEFAULT_OUT_ROOT) / suite.task.name
+    # The report must have somewhere to go before any request is made.
+    try:
+        prepare_out_dir(out_dir)
+    except OSError as exc:
+        raise _cannot_write(out_dir, exc) from None
     timestamp = utc_timestamp()
     outputs = run_suite(
         suite,

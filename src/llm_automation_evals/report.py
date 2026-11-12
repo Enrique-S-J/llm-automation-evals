@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -340,6 +341,18 @@ def render_markdown(report: Report) -> str:
 # ---------------------------------------------------------------------------
 # Files
 # ---------------------------------------------------------------------------
+
+
+def prepare_out_dir(out_dir: Union[str, Path]) -> None:
+    """Create out_dir and prove a file can be written in it; OSError if not.
+
+    Called before a run starts. Finding out that the report has nowhere to
+    go after every request has been made would throw the outputs away.
+    """
+    directory = Path(out_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=directory):
+        pass
 
 
 def _replace_file(path: Path, text: str) -> None:

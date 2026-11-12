@@ -389,6 +389,34 @@ def test_a_broken_suite_exits_2_before_any_request(workdir, task_dir, stub):
     assert stub.requests == []
 
 
+def test_an_out_directory_that_cannot_be_written_is_found_before_any_request(workdir, task_dir, stub):
+    """Exit 2 has to mean no request was made.
+
+    The output directory used to be created only when the report was
+    written, so a bad --out cost a full run and then threw the outputs away.
+    """
+    blocker = workdir / "a file not a directory"
+    blocker.write_text("in the way", encoding="utf-8")
+    read_only = workdir / "read only"
+    read_only.mkdir()
+    read_only.chmod(0o555)
+    targets = [blocker, blocker / "sub"]
+    if os.access(read_only, os.W_OK):  # root, or a platform that ignores the mode
+        read_only.chmod(0o755)
+    else:
+        targets.append(read_only)
+    try:
+        for target in targets:
+            result = cli("run", task_dir, "--out", target, cwd=workdir, stub=stub)
+            assert result.returncode == 2, (target, result.stderr)
+            assert result.stderr.startswith("Error: cannot write the report to ")
+            assert "Traceback" not in result.stderr
+    finally:
+        read_only.chmod(0o755)
+    assert stub.requests == []
+    assert blocker.read_text(encoding="utf-8") == "in the way"
+
+
 def test_a_missing_task_directory_exits_2(workdir):
     result = cli("run", workdir / "no such suite", cwd=workdir)
     assert result.returncode == 2
