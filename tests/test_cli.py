@@ -611,6 +611,16 @@ def test_an_out_directory_that_cannot_be_written_is_found_before_any_request(wor
     assert blocker.read_text(encoding="utf-8") == "in the way"
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1", "soon"])
+def test_a_timeout_that_is_not_a_positive_finite_number_is_a_usage_error(workdir, task_dir, stub, value):
+    # "nan" used to get through, because nan <= 0 is false, and ended in a traceback.
+    result = cli("run", task_dir, f"--timeout={value}", cwd=workdir, stub=stub)
+    assert result.returncode == 2
+    assert "argument --timeout:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert stub.requests == []
+
+
 def test_a_missing_task_directory_exits_2(workdir):
     result = cli("run", workdir / "no such suite", cwd=workdir)
     assert result.returncode == 2
@@ -1009,6 +1019,16 @@ def test_compare_fails_when_the_candidate_dropped_cases_unless_told_it_was_meant
     assert "- Removed: `abstain-01`" in allowed.stdout
     # Cases that were only added are not a reason to fail.
     assert cli("compare", candidate, baseline, cwd=workdir).returncode == 0
+
+
+def test_compare_with_a_report_nested_too_deeply_to_read_exits_2(workdir, two_runs):
+    baseline, _ = two_runs
+    deep = workdir / "deep.json"
+    deep.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+    result = cli("compare", baseline, deep, cwd=workdir)
+    assert result.returncode == 2
+    assert "deep.json' is nested too deeply to be a report" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_compare_with_a_missing_report_exits_2(workdir, two_runs):

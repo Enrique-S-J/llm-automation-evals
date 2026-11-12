@@ -6,6 +6,7 @@ limit, and response parsing.
 """
 
 import asyncio
+import datetime
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -505,6 +506,9 @@ def test_missing_endpoint_variables_are_named_in_the_error():
         "http://llm .test/v1",
         "http://llm.test/v1#section",
         "http://[v1.fe]/v1",  # passes urlsplit; only httpx refuses it
+        # Accepted by httpx.URL, refused when a request is built from it.
+        "http://xn--/v1",
+        "http://xn--zz-.example/v1",
     ],
 )
 def test_a_base_url_that_is_not_http_is_rejected_without_echoing_it(url):
@@ -699,6 +703,20 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
             {"abstain": {"category": "other", "need_human": True}},
             "task.yaml: abstain sets a field 'need_human' that the output schema does not have",
         ),
+        # Settings that are fine as YAML and cannot be sent as JSON. Each
+        # used to load and then raise while the first request was built.
+        (
+            {"request": {"extra_body": {"cutoff": datetime.date(2026, 1, 1)}}},
+            "request.extra_body: Value error, must be plain JSON: Object of type date is not JSON serializable",
+        ),
+        (
+            {"request": {"extra_body": {"top_p": float("nan")}}},
+            "request.extra_body: Value error, must be plain JSON",
+        ),
+        ({"request": {"temperature": float("inf")}}, "request.temperature: Value error, must be a finite number"),
+        ({"request": {"temperature": float("nan")}}, "request.temperature: Value error, must be a finite number"),
+        ({"request": {"timeout_seconds": float("inf")}}, "request.timeout_seconds: Input should be a finite number"),
+        ({"request": {"retry_delay_seconds": float("nan")}}, "request.retry_delay_seconds: Input should be a finite number"),
         # A reference is only followed when a reply reaches it, so a
         # misspelled one used to surface after every request had been made.
         (

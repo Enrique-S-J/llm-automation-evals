@@ -7,6 +7,8 @@ into an ordinary one that nothing checks.
 
 from __future__ import annotations
 
+import json
+import math
 from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -107,12 +109,31 @@ class EndpointEnv(_Strict):
 class RequestSettings(_Strict):
     temperature: Union[int, float] = 0
     max_tokens: Optional[int] = Field(default=512, ge=1)
-    timeout_seconds: float = Field(default=60.0, gt=0)
+    timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     concurrency: int = Field(default=4, ge=1)
-    retry_delay_seconds: float = Field(default=1.0, ge=0)
+    retry_delay_seconds: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     # Merged into the request body last, for server-specific parameters such
     # as `seed` or `response_format`.
     extra_body: dict[str, Any] = {}
+
+    # YAML can say things JSON cannot: `.inf`, `.nan`, a bare date. Each of
+    # these loads without complaint and then fails when the first request
+    # body is serialized, so they are refused here.
+    @field_validator("temperature")
+    @classmethod
+    def _finite(cls, value: Union[int, float]) -> Union[int, float]:
+        if not math.isfinite(value):
+            raise ValueError("must be a finite number")
+        return value
+
+    @field_validator("extra_body")
+    @classmethod
+    def _plain_json(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"must be plain JSON: {exc}") from None
+        return value
 
 
 class JudgeSettings(_Strict):

@@ -437,6 +437,8 @@ def _read_json(source: Path) -> Any:
         raise ConfigError(f"cannot read report '{source}': {exc.strerror}") from None
     except ValueError:
         raise ConfigError(f"report '{source}' is not valid JSON") from None
+    except RecursionError:
+        raise ConfigError(f"report '{source}' is nested too deeply to be a report") from None
 
 
 def _problems(exc: ValidationError) -> str:

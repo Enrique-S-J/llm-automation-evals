@@ -17,6 +17,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import math
 import shlex
 import sys
 import traceback
@@ -84,8 +85,9 @@ def _positive_float(value: str) -> float:
         number = float(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{value!r} is not a number") from None
-    if number <= 0:
-        raise argparse.ArgumentTypeError("must be greater than 0")
+    # nan compares false with everything, so `number <= 0` alone lets it through.
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than 0")
     return number
 
 

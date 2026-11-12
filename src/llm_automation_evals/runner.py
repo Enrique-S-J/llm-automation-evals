@@ -354,8 +354,11 @@ class Endpoint:
         judge_model = env.get(names.judge_model_env, "").strip() or None
         endpoint = cls(base_url=base_url, model=model, api_key=api_key, judge_model=judge_model)
         try:
-            httpx.URL(endpoint.chat_url)
-        except httpx.InvalidURL:
+            # Building a request is what encodes the host name, which is
+            # where a malformed internationalised name is refused (with an
+            # idna error, a kind of ValueError, not an httpx one).
+            httpx.Request("POST", endpoint.chat_url)
+        except (httpx.InvalidURL, ValueError):
             raise not_a_url from None
         return endpoint
 
