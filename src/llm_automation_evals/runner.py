@@ -373,6 +373,9 @@ def _extract_content(response: httpx.Response) -> tuple[Optional[str], Optional[
         body = response.json()
     except ValueError:
         return None, "endpoint returned a body that is not JSON"
+    except RecursionError:
+        # Valid JSON, nested deeper than the parser's stack goes.
+        return None, "endpoint returned a body nested too deeply to parse"
     try:
         message = body["choices"][0]["message"]
         content = message["content"]

@@ -242,6 +242,24 @@ def test_a_response_that_is_not_a_chat_completion_is_a_request_error(response):
     assert output.error.startswith("endpoint ")
 
 
+def test_a_response_body_nested_too_deeply_to_parse_is_a_request_error_for_that_case():
+    """The body is parsed recursively and a deep enough one exhausts the stack.
+
+    RecursionError is not a ValueError, so it used to leave the request
+    coroutine, cancel the other cases and end the run with a traceback.
+    """
+    deep = "[" * 200_000 + "]" * 200_000
+
+    def handler(request):
+        if "subject of bad" in json.loads(request.content)["messages"][1]["content"]:
+            return httpx.Response(200, text=deep)
+        return completion(reply())
+
+    bad, good = run(make_suite(make_case("bad"), make_case("good")), handler)
+    assert (bad.text, bad.error) == (None, "endpoint returned a body nested too deeply to parse")
+    assert good.text == reply()
+
+
 def test_error_strings_never_contain_the_url_or_credentials():
     """httpx puts the full URL, credentials included, in its exception text.
 
