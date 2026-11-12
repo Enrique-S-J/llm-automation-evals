@@ -17,7 +17,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import yaml
-from jsonschema import Draft202012Validator, SchemaError
 from pydantic import ValidationError
 
 from .models import Case, ConfigError, EndpointEnv, RawOutput, Task
@@ -27,6 +26,7 @@ from .scorers import (
     LlmJudgeScorer,
     SafeFailureScorer,
     build_scorers,
+    schema_validator,
     scorers_for,
     specs_for,
 )
@@ -143,9 +143,9 @@ def _enum_of(properties: Any, field: str) -> Optional[list]:
 
 def _check_suite(task: Task, cases: list[Case]) -> None:
     try:
-        Draft202012Validator.check_schema(task.output_schema)
-    except SchemaError as exc:
-        raise ConfigError(f"{TASK_FILE}: output_schema is not a valid JSON Schema: {exc.message}") from None
+        schema_validator(task.output_schema)
+    except ConfigError as exc:
+        raise ConfigError(f"{TASK_FILE}: {exc}") from None
 
     properties = task.output_schema.get("properties")
     if task.confusion_field is not None:

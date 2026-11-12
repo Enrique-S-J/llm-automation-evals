@@ -7,13 +7,15 @@ limit, and response parsing.
 
 import asyncio
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import httpx
 import pytest
 import yaml
 
 from helpers import ABSTAIN, TASK, abstain_case, completion, make_case, make_suite, reply
-from llm_automation_evals.models import ConfigError, EndpointEnv
+from llm_automation_evals.models import ConfigError, EndpointEnv, RawOutput
 from llm_automation_evals.runner import (
     Endpoint,
     collect_outputs,
@@ -21,6 +23,7 @@ from llm_automation_evals.runner import (
     render_prompt,
     run_suite,
 )
+from llm_automation_evals.scorers import score_case
 
 ENDPOINT = Endpoint(base_url="http://llm.test/v1", model="test-model")
 JUDGE_MARKER = "You are grading"
@@ -560,6 +563,16 @@ def write_suite(directory, task=TASK, cases=CASES):
     return directory
 
 
+def with_property(**properties):
+    """The test task's output schema with some properties replaced, plus a `$defs`."""
+    schema = TASK["output_schema"]
+    return {
+        **schema,
+        "properties": {**schema["properties"], **properties},
+        "$defs": {"text": {"$anchor": "text", "type": "string", "minLength": 1}},
+    }
+
+
 def with_case(**changes):
     first = {**CASES["cases"][0], **changes}
     return {"cases": [first, *CASES["cases"][1:]]}
@@ -668,6 +681,20 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
             {"abstain": {"category": "other", "need_human": True}},
             "task.yaml: abstain sets a field 'need_human' that the output schema does not have",
         ),
+        # A reference is only followed when a reply reaches it, so a
+        # misspelled one used to surface after every request had been made.
+        (
+            {"output_schema": with_property(summary={"$ref": "#/$defs/sumary"})},
+            "task.yaml: output_schema refers to '#/$defs/sumary', which does not resolve inside the schema",
+        ),
+        (
+            {"output_schema": with_property(summary={"$ref": "#no-such-anchor"})},
+            "task.yaml: output_schema refers to '#no-such-anchor', which does not resolve inside the schema",
+        ),
+        (
+            {"output_schema": with_property(summary={"items": {"$ref": "https://schemas.example/summary.json"}})},
+            "task.yaml: output_schema refers to 'https://schemas.example/summary.json', which does not resolve",
+        ),
     ],
 )
 def test_task_mistakes_are_caught_at_load(tmp_path, change, message):
@@ -740,6 +767,52 @@ def test_a_boolean_subschema_is_handled_as_the_valid_schema_it_is(tmp_path):
     # It has no enum, so it cannot be the confusion field.
     with pytest.raises(ConfigError, match="confusion_field 'priority' must be"):
         load_suite(write_suite(tmp_path / "b", task={**task, "confusion_field": "priority"}))
+
+
+def test_a_reference_inside_the_schema_is_followed(tmp_path):
+    for ref in ("#/$defs/text", "#text"):
+        task = {**TASK, "output_schema": with_property(summary={"$ref": ref})}
+        suite = load_suite(write_suite(tmp_path / ref.strip("#/").replace("/", "-"), task=task))
+        scores = score_case(suite.task, suite.cases[0], RawOutput(case_id="voice-1", text=reply()))
+        assert scores[0].passed
+        empty = score_case(suite.task, suite.cases[0], RawOutput(case_id="voice-1", text=reply(summary="")))
+        assert not empty[0].passed and "$.summary" in empty[0].detail
+
+
+def test_scoring_never_fetches_a_schema_over_the_network():
+    """A `$ref` to a URL must not turn scoring into an HTTP client.
+
+    jsonschema's default registry still retrieves remote references, with a
+    deprecation warning, so the validator used to fetch whatever URL a suite
+    file named, at scoring time, from `report` as well as from `run`. Here
+    the URL is served locally and must never be asked for.
+    """
+    hits = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            body = b'{"type": "string"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        remote = {"$ref": f"http://127.0.0.1:{server.server_address[1]}/summary.json"}
+        # Built directly, so the load-time check is not what stops it.
+        task = make_suite(output_schema=with_property(summary=remote)).task
+        with pytest.raises(ConfigError, match="does not resolve inside the schema"):
+            score_case(task, make_case(), RawOutput(case_id="case-1", text=reply()))
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert hits == []
 
 
 def test_a_file_that_is_not_utf8_is_explained(tmp_path):

@@ -546,6 +546,34 @@ def test_a_broken_suite_exits_2_before_any_request(workdir, task_dir, stub):
     assert stub.requests == []
 
 
+def test_a_schema_reference_that_points_nowhere_exits_2_before_any_request(workdir, task_dir, stub):
+    """A validator follows a `$ref` only when a reply reaches it.
+
+    With a misspelled reference under `summary`, the suite used to load,
+    all 30 requests were made, and the first reply to be validated raised:
+    exit 4, a traceback, and no report.
+    """
+    task = yaml.safe_load(read(task_dir, "task.yaml"))
+    task["output_schema"]["$defs"] = {"summary": {"type": "string", "minLength": 1}}
+    task["output_schema"]["properties"]["summary"] = {"$ref": "#/$defs/sumary"}
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task, sort_keys=False), encoding="utf-8")
+
+    result = cli("run", task_dir, "--out", workdir / "out", cwd=workdir, stub=stub)
+    assert result.returncode == 2
+    assert result.stderr.startswith("Error: task.yaml: output_schema refers to '#/$defs/sumary'")
+    assert "Traceback" not in result.stderr
+    assert stub.requests == []
+    assert not (workdir / "out").exists()
+
+    # Spelled right, the same suite runs and the reference is enforced.
+    task["output_schema"]["properties"]["summary"] = {"$ref": "#/$defs/summary"}
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task, sort_keys=False), encoding="utf-8")
+    stub.replies["voice-01"] = oracle_reply(stub.suite, stub.suite.cases[0], summary="")
+    result = cli("run", task_dir, "--out", workdir / "out", cwd=workdir, stub=stub)
+    assert result.returncode == 0, result.stderr
+    assert "ticket_classifier: 29/30 (96.7%) passed; 1 failed" in result.stdout
+
+
 def test_an_out_directory_that_cannot_be_written_is_found_before_any_request(workdir, task_dir, stub):
     """Exit 2 has to mean no request was made.
 

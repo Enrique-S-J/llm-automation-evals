@@ -14,7 +14,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, SchemaError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 from .models import Case, ConfigError, RawOutput, ScoreResult, ScorerSpec, Task
 
@@ -157,6 +160,59 @@ def json_equal(left: Any, right: Any) -> bool:
     return left == right
 
 
+# A registry with nothing in it and no way to retrieve anything. jsonschema's
+# default one still fetches a `$ref` that is a URL, with a deprecation
+# warning, which would make scoring an HTTP client pointed wherever a suite
+# file says.
+_LOCAL_ONLY: Registry = Registry()
+
+
+def _unresolvable_refs(schema: dict[str, Any]) -> list[str]:
+    """Every `$ref` in the schema that does not resolve inside the schema."""
+    root = DRAFT202012.create_resource(schema)
+    dangling: list[str] = []
+
+    def walk(resolver: Any, resource: Any) -> None:
+        contents = resource.contents
+        if isinstance(contents, dict):
+            for keyword in ("$ref", "$dynamicRef"):
+                ref = contents.get(keyword)
+                if isinstance(ref, str):
+                    try:
+                        resolver.lookup(ref)
+                    except Unresolvable:
+                        dangling.append(ref)
+        # subresources() knows which keywords hold schemas, so a "$ref" key
+        # inside an enum or a const is not mistaken for a reference.
+        for sub in resource.subresources():
+            walk(resolver.in_subresource(sub), sub)
+
+    walk(_LOCAL_ONLY.resolver_with_root(root), root)
+    return dangling
+
+
+def schema_validator(schema: dict[str, Any]) -> Draft202012Validator:
+    """A validator for an output schema, after checking the schema itself.
+
+    A validator follows a `$ref` only when a reply reaches it. A reference
+    that points nowhere therefore passes check_schema and raises in the
+    middle of scoring, after every request has been made. All references
+    are resolved here instead, against the schema document alone.
+    """
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ConfigError(f"output_schema is not a valid JSON Schema: {exc.message}") from None
+    dangling = _unresolvable_refs(schema)
+    if dangling:
+        raise ConfigError(
+            f"output_schema refers to {dangling[0]!r}, which does not resolve inside the schema. "
+            "A $ref has to point at something in output_schema itself, such as "
+            "'#/$defs/name'; nothing is fetched from a file or a URL."
+        )
+    return Draft202012Validator(schema, registry=_LOCAL_ONLY)
+
+
 def _clip(text: str, limit: int = _DETAIL_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
@@ -199,7 +255,7 @@ class JsonSchemaScorer(Scorer):
 
     def __init__(self, task: Task, spec: ScorerSpec) -> None:
         super().__init__(task, spec)
-        self._validator = Draft202012Validator(task.output_schema)
+        self._validator = schema_validator(task.output_schema)
 
     def score(self, case: Case, output: RawOutput) -> ScoreResult:
         parsed = parse_output(output.text)
