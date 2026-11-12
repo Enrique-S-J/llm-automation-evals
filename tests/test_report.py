@@ -497,6 +497,9 @@ def test_report_metadata_is_what_was_passed_in_and_nothing_more():
     assert (data["schema_version"], data["task"], data["model"]) == (1, "mini", "test-model")
     assert data["endpoint_host"] == "llm.test"
     assert data["temperature"] == 0
+    # The task's temperature unless the caller knows the outputs came from another.
+    assert build(suite=make_suite(request={"temperature": 0.7})).temperature == 0.7
+    assert build(temperature=0.9).temperature == 0.9
 
 
 def test_unreadable_reports_are_explained(tmp_path):

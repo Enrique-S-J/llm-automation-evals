@@ -221,15 +221,16 @@ def _cmd_report(args: argparse.Namespace) -> int:
     dropped = [case.id for case in previous.cases if case.id not in known]
     if dropped:
         _err(f"Ignoring saved outputs for cases no longer in the suite: {', '.join(dropped)}")
-    # Model, host and timestamp describe when the outputs were produced, so
-    # they are carried over. Re-scoring unchanged files reproduces the report
-    # byte for byte.
+    # Model, host, timestamp and temperature describe how the outputs were
+    # produced, so they are carried over and not read from the suite as it
+    # is now. Re-scoring unchanged files reproduces the report byte for byte.
     report = build_report(
         suite,
         outputs_from_report(previous),
         model=previous.model,
         endpoint_host=previous.endpoint_host,
         timestamp=previous.timestamp,
+        temperature=previous.temperature,
         judge=previous.judge_enabled,
         judge_model=previous.judge_model,
     )

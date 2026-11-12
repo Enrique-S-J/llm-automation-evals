@@ -672,6 +672,29 @@ def test_report_rescores_against_the_suite_as_it_is_now(workdir, task_dir, stub)
     assert "**Pass rate: 28/30 (93.3%)**" in read(out_dir, "report.md")
 
 
+def test_report_keeps_the_temperature_the_outputs_were_sampled_at(workdir, task_dir, stub):
+    """The temperature describes the saved outputs, not the suite as it is now.
+
+    Model, host and timestamp were carried over on a re-score and the
+    temperature was read from task.yaml again, so editing task.yaml after a
+    run at 0.9 produced a report saying those outputs came from temperature 0.
+    """
+    task = yaml.safe_load(read(task_dir, "task.yaml"))
+    task["request"]["temperature"] = 0.9
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task, sort_keys=False), encoding="utf-8")
+    out_dir = workdir / "saved run"
+    assert cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub).returncode == 0
+    assert {r["body"]["temperature"] for r in stub.requests} == {0.9}
+    original = {name: read(out_dir, name) for name in ("report.json", "report.md")}
+    assert "| Temperature | 0.9 |" in original["report.md"]
+
+    task["request"]["temperature"] = 0
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task, sort_keys=False), encoding="utf-8")
+    assert cli("report", task_dir, out_dir, cwd=workdir).returncode == 0
+    assert json.loads(read(out_dir, "report.json"))["temperature"] == 0.9
+    assert {name: read(out_dir, name) for name in original} == original
+
+
 def test_report_applies_fail_under_to_the_rescored_run(workdir, task_dir, stub):
     degrade(stub)  # 90.0%
     out_dir = workdir / "saved run"

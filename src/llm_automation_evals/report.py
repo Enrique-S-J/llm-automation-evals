@@ -66,8 +66,14 @@ def build_report(
     timestamp: str,
     judge: bool = False,
     judge_model: Optional[str] = None,
+    temperature: Union[int, float, None] = None,
 ) -> Report:
-    """Score every case and aggregate. Cases stay in cases.yaml order."""
+    """Score every case and aggregate. Cases stay in cases.yaml order.
+
+    `temperature` is the one the outputs were sampled at. It defaults to
+    the task's setting, which is right for outputs that were just produced;
+    a re-score of saved outputs passes the value saved with them.
+    """
     task = suite.task
     by_id = {output.case_id: output for output in outputs}
     results: list[CaseResult] = []
@@ -126,7 +132,7 @@ def build_report(
         model=model,
         endpoint_host=endpoint_host,
         timestamp=timestamp,
-        temperature=task.request.temperature,
+        temperature=task.request.temperature if temperature is None else temperature,
         judge_enabled=judge,
         judge_model=judge_model if (judge or judge_ran) else None,
         totals=totals,
