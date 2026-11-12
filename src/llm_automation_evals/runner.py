@@ -8,12 +8,13 @@ is recorded as it came back and left for the scorers to fail.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 import httpx
 import yaml
@@ -346,6 +347,35 @@ class Endpoint:
         parts = urlsplit(self.base_url)
         return urlunsplit(parts._replace(path=parts.path.rstrip("/") + "/chat/completions"))
 
+    @property
+    def secrets(self) -> list[str]:
+        """Every string from these settings that must not appear in a log.
+
+        The key, and whatever else could be one: credentials in the URL, as
+        written, decoded, and in the Basic form httpx sends them in, and the
+        query string with each of its values. Longest first, so a secret
+        that contains another is replaced whole. Apart from the key, strings
+        under four characters are left alone: replacing every "1" because
+        the URL ends in `?api-version=1` would wreck the message and hide
+        nothing.
+        """
+        parts = urlsplit(self.base_url)
+        found = set()
+        if parts.username or parts.password:
+            user, password = parts.username or "", parts.password or ""
+            for name, word in ((user, password), (unquote(user), unquote(password))):
+                pair = f"{name}:{word}"
+                found.update((word, pair, base64.b64encode(pair.encode()).decode()))
+        if parts.query:
+            found.add(parts.query)
+            for _, value in parse_qsl(parts.query):
+                found.add(value)
+            found.update(item.partition("=")[2] for item in parts.query.split("&"))
+        secrets = {text for text in found if len(text) >= 4}
+        if self.api_key:
+            secrets.add(self.api_key)
+        return sorted(secrets, key=lambda text: (-len(text), text))
+
     @classmethod
     def from_env(cls, names: EndpointEnv, environ: Optional[Mapping[str, str]] = None) -> "Endpoint":
         env = os.environ if environ is None else environ
@@ -449,10 +479,12 @@ class _Caller:
         self._log = log
         self._sleep = sleep
         self._headers = {"Authorization": f"Bearer {endpoint.api_key}"} if endpoint.api_key else {}
+        self._secrets = endpoint.secrets
 
     def _redact(self, text: str) -> str:
-        key = self._endpoint.api_key
-        return text.replace(key, "[redacted]") if key else text
+        for secret in self._secrets:
+            text = text.replace(secret, "[redacted]")
+        return text
 
     async def chat(
         self, label: str, model: str, messages: list[dict[str, str]]

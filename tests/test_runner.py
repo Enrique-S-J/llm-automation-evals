@@ -324,6 +324,35 @@ def test_a_key_that_straddles_the_log_cut_is_redacted_whole():
     assert "sk-test" not in logged[0]
 
 
+def echoing_server(request):
+    """A server whose error page repeats the request line and the credentials it was sent."""
+    target = request.url.raw_path.decode()
+    return httpx.Response(404, text=f"Cannot POST {target} (Authorization: {request.headers.get('authorization')})")
+
+
+def test_secrets_in_the_base_url_are_redacted_from_logged_error_bodies():
+    """A key can travel in the base URL's query string or as its userinfo.
+
+    Only EVAL_API_KEY was redacted. A server that echoes the request target
+    or the Authorization header in its error page put the other two on
+    stderr, which in CI is the job log.
+    """
+    logged = []
+    endpoint = Endpoint("http://llm.test/v1?api-version=1&api-key=QUERYSECRET123", "m")
+    run(make_suite(), echoing_server, endpoint=endpoint, log=logged.append)
+    assert logged == ["case-1: HTTP 404 Cannot POST /v1/chat/completions?[redacted] (Authorization: None)"]
+
+    logged.clear()
+    endpoint = Endpoint("http://alice:hunter%402@llm.test/v1", "m")
+    run(make_suite(), echoing_server, endpoint=endpoint, log=logged.append)
+    # httpx sends URL credentials as Basic auth; neither form may be logged.
+    assert logged == ["case-1: HTTP 404 Cannot POST /v1/chat/completions (Authorization: Basic [redacted])"]
+
+    logged.clear()
+    run(make_suite(), lambda request: httpx.Response(400, text="bad password hunter@2 for alice:hunter%402"), endpoint=endpoint, log=logged.append)
+    assert logged == ["case-1: HTTP 400 bad password [redacted] for [redacted]"]
+
+
 # ---------------------------------------------------------------------------
 # Concurrency and ordering
 # ---------------------------------------------------------------------------
