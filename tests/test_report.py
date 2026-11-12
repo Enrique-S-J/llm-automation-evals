@@ -11,15 +11,17 @@ import pytest
 
 from helpers import ABSTAIN, LABELS, abstain_case, make_case, make_suite, out, reply
 from llm_automation_evals.compare import compare_reports, render_comparison
-from llm_automation_evals.models import ConfigError, RawOutput
+from llm_automation_evals.models import ConfigError, RawOutput, SavedOutputs
 from llm_automation_evals.report import (
     INVALID,
     build_report,
     fraction,
     load_report,
+    load_saved,
     outputs_from_report,
     render_json,
     render_markdown,
+    write_outputs,
     write_report,
 )
 
@@ -511,8 +513,37 @@ def test_unreadable_reports_are_explained(tmp_path):
         load_report(garbage)
     future = tmp_path / "future.json"
     future.write_text(render_json(build()).replace('"schema_version": 1', '"schema_version": 2'), encoding="utf-8")
-    with pytest.raises(ConfigError, match="unsupported report schema_version 2"):
+    with pytest.raises(ConfigError, match="unsupported schema_version 2; this version reads 1"):
         load_report(future)
+
+
+def test_saved_outputs_round_trip_and_score_to_the_same_report(tmp_path):
+    report = build()
+    saved = SavedOutputs(
+        schema_version=1, task="mini", temperature=0, outputs=OUTPUTS, **META,
+    )
+    path = write_outputs(tmp_path / "run output", saved)
+    assert path.name == "outputs.json"
+    text = path.read_text(encoding="utf-8")
+    assert text.endswith("\n") and str(tmp_path) not in text
+
+    # A directory holding only outputs.json is read from it; so is the file.
+    for source in (path, path.parent):
+        loaded, source_file = load_saved(source)
+        assert (loaded, source_file) == (saved, path)
+    assert render_json(build(outputs=loaded.outputs)) == render_json(report)
+
+    # Once the report is there, the directory means the report.
+    write_report(path.parent, report)
+    loaded, source_file = load_saved(path.parent)
+    assert source_file.name == "report.json"
+    assert loaded.outputs == outputs_from_report(report)
+    assert (loaded.model, loaded.timestamp, loaded.temperature) == ("test-model", META["timestamp"], 0)
+
+    future = tmp_path / "outputs.json"
+    future.write_text(text.replace('"schema_version": 1', '"schema_version": 2'), encoding="utf-8")
+    with pytest.raises(ConfigError, match="not a set of saved outputs this version can read: schema_version"):
+        load_saved(future)
 
 
 # ---------------------------------------------------------------------------

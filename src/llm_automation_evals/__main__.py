@@ -17,6 +17,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 import traceback
 from fractions import Fraction
@@ -24,16 +25,19 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .compare import compare_reports, render_comparison
-from .models import ConfigError, Report
+from .models import ConfigError, RawOutput, Report, SavedOutputs
 from .report import (
+    OUTPUTS_JSON,
     REPORT_JSON,
     REPORT_MD,
+    SCHEMA_VERSION,
     build_report,
     fraction,
     load_report,
-    outputs_from_report,
+    load_saved,
     prepare_out_dir,
     utc_timestamp,
+    write_outputs,
     write_report,
 )
 from .runner import Endpoint, load_suite, run_suite
@@ -115,13 +119,15 @@ def build_parser() -> argparse.ArgumentParser:
         "report",
         help="re-score a saved run without calling the model",
         description="Re-score the raw outputs saved in an earlier report.json against the "
-        "task directory as it is now, and write the report again. Makes no requests.",
+        "task directory as it is now, and write the report again. Makes no requests. Also "
+        "scores the outputs.json that a run leaves behind when it stops before its report.",
     )
     report.add_argument("task_dir", help="directory holding task.yaml and cases.yaml")
     report.add_argument(
         "source",
         nargs="?",
-        help=f"report.json, or the run directory holding it (default: {DEFAULT_OUT_ROOT}/<task name>)",
+        help="report.json, outputs.json, or the run directory holding either "
+        f"(default: {DEFAULT_OUT_ROOT}/<task name>)",
     )
     report.add_argument("--out", help="output directory (default: where the source report is)")
     report.add_argument(
@@ -192,24 +198,76 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise _cannot_write(out_dir, exc) from None
     timestamp = utc_timestamp()
-    outputs = run_suite(
-        suite,
-        endpoint,
-        judge=args.judge,
-        concurrency=args.concurrency,
-        timeout=args.timeout,
-        log=_err,
-    )
-    report = build_report(
-        suite,
-        outputs,
-        model=endpoint.model,
-        endpoint_host=endpoint.host,
-        timestamp=timestamp,
-        judge=args.judge,
-        judge_model=endpoint.judge_model or endpoint.model,
-    )
-    return _finish(report, out_dir, args.fail_under)
+
+    def rescore(kept: Path) -> str:
+        # Quoted, so the command can be pasted when a path has spaces in it.
+        command = shlex.join(["python", "-m", "llm_automation_evals", "report", args.task_dir, str(kept)])
+        return f"`{command}` scores them without calling the model again."
+
+    def keep(outputs: list[RawOutput]) -> Optional[Path]:
+        """Put the replies on disk, in case order, before anything else is done with them."""
+        arrived = {output.case_id: output for output in outputs}
+        saved = SavedOutputs(
+            schema_version=SCHEMA_VERSION,
+            task=suite.task.name,
+            model=endpoint.model,
+            endpoint_host=endpoint.host,
+            timestamp=timestamp,
+            temperature=suite.task.request.temperature,
+            judge_enabled=args.judge,
+            judge_model=endpoint.judge_model or endpoint.model,
+            outputs=[arrived[case.id] for case in suite.cases if case.id in arrived],
+        )
+        try:
+            return write_outputs(out_dir, saved)
+        except OSError as exc:
+            _err(f"Could not save the replies to '{out_dir / OUTPUTS_JSON}': {exc.strerror}")
+            return None
+
+    arrived: list[RawOutput] = []
+    try:
+        outputs = run_suite(
+            suite,
+            endpoint,
+            judge=args.judge,
+            concurrency=args.concurrency,
+            timeout=args.timeout,
+            log=_err,
+            on_output=arrived.append,
+        )
+    except KeyboardInterrupt:
+        kept = keep(arrived) if arrived else None
+        if kept is not None:
+            _err(
+                f"Interrupted with {len(arrived)} of {len(suite.cases)} replies in; they are "
+                f"saved in '{kept}'. {rescore(kept)}"
+            )
+        raise
+
+    # The replies are the part of a run that costs something. They go to
+    # disk before scoring, so nothing that fails from here on loses them.
+    kept = keep(outputs)
+    try:
+        report = build_report(
+            suite,
+            outputs,
+            model=endpoint.model,
+            endpoint_host=endpoint.host,
+            timestamp=timestamp,
+            judge=args.judge,
+            judge_model=endpoint.judge_model or endpoint.model,
+        )
+        code = _finish(report, out_dir, args.fail_under)
+    except BaseException:
+        if kept is not None:
+            _err(
+                f"The replies are saved in '{kept}'. Once the problem is fixed, {rescore(kept)}"
+            )
+        raise
+    # report.json now holds the same replies.
+    if kept is not None:
+        kept.unlink(missing_ok=True)
+    return code
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
@@ -219,15 +277,14 @@ def _cmd_report(args: argparse.Namespace) -> int:
         raise ConfigError(
             f"no saved run at '{source}'. Run the suite first, or pass the path to a report.json."
         )
-    previous = load_report(source)
+    previous, source_file = load_saved(source)
     if previous.task != suite.task.name:
         raise ConfigError(
             f"that report is for task '{previous.task}', but '{args.task_dir}' is '{suite.task.name}'"
         )
-    source_file = source / REPORT_JSON if source.is_dir() else source
     if args.out:
         out_dir = Path(args.out)
-    elif source_file.name == REPORT_JSON:
+    elif source_file.name in (REPORT_JSON, OUTPUTS_JSON):
         out_dir = source_file.parent
     else:
         # The result is always named report.json and report.md. Beside a
@@ -238,7 +295,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
             "run, so say where to write them with --out DIR."
         )
     known = {case.id for case in suite.cases}
-    dropped = [case.id for case in previous.cases if case.id not in known]
+    dropped = [output.case_id for output in previous.outputs if output.case_id not in known]
     if dropped:
         # The saved raw outputs are the evidence of the run. Writing the
         # result over the source would delete the ones for these cases.
@@ -257,7 +314,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
     # is now. Re-scoring unchanged files reproduces the report byte for byte.
     report = build_report(
         suite,
-        outputs_from_report(previous),
+        previous.outputs,
         model=previous.model,
         endpoint_host=previous.endpoint_host,
         timestamp=previous.timestamp,

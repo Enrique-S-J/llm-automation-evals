@@ -13,6 +13,7 @@ The work directory has spaces in its name on purpose.
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -57,6 +58,7 @@ class Stub:
         self.hold = 0.0
         self.in_flight = 0
         self.peak = 0
+        self.answered = 0
         self.requests = []
         self._lock = threading.Lock()
         stub = self
@@ -105,6 +107,7 @@ class Stub:
         finally:
             with self._lock:
                 self.in_flight -= 1
+                self.answered += 1
 
     def _answer(self, path, is_judge, case):
         if path != "/v1/chat/completions":
@@ -149,8 +152,8 @@ def stub(task_dir):
     server.close()
 
 
-def cli(*args, cwd, stub=None, env=None):
-    """Run the CLI as a subprocess. The parent's EVAL_* and proxy settings are dropped."""
+def cli_env(stub=None, env=None):
+    """The environment for a CLI subprocess: no EVAL_* or proxy settings from the parent."""
     blocked = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
     environment = {
         key: value
@@ -160,6 +163,12 @@ def cli(*args, cwd, stub=None, env=None):
     if stub is not None:
         environment.update(EVAL_BASE_URL=stub.base_url, EVAL_MODEL="stub-model", EVAL_API_KEY=API_KEY)
     environment.update(env or {})
+    return environment
+
+
+def cli(*args, cwd, stub=None, env=None):
+    """Run the CLI as a subprocess. The parent's EVAL_* and proxy settings are dropped."""
+    environment = cli_env(stub, env)
     return subprocess.run(
         [sys.executable, "-m", "llm_automation_evals", *map(str, args)],
         cwd=cwd,
@@ -649,6 +658,100 @@ def test_a_crash_inside_the_harness_does_not_exit_with_the_gate_code(workdir, tw
     assert result.returncode == 4
     assert "RuntimeError: injected failure" in result.stderr
     assert "Unexpected error" in result.stderr.splitlines()[-1]
+
+
+# Runs `python -m llm_automation_evals` with one function replaced, to make
+# the harness fail at a chosen point.
+BREAK_SCORING = (
+    "import sys\n"
+    "import llm_automation_evals.__main__ as cli\n"
+    "def broken(*args, **kwargs):\n"
+    "    raise RuntimeError('injected failure')\n"
+    "cli.build_report = broken\n"
+    "sys.exit(cli.main(sys.argv[1:]))\n"
+)
+
+
+def test_a_crash_after_the_requests_keeps_the_replies_for_report_to_score(workdir, task_dir, stub):
+    """The replies are the expensive part of a run, and they were only in memory.
+
+    Anything that raised between the last reply and the report being written
+    threw all of them away. They are now on disk before scoring starts, and
+    `report` scores them without another request.
+    """
+    degrade(stub)
+    out_dir = workdir / "crashed run"
+    crashed = subprocess.run(
+        [sys.executable, "-c", BREAK_SCORING, "run", str(task_dir), "--out", str(out_dir)],
+        cwd=workdir, env=cli_env(stub), capture_output=True, text=True, timeout=120,
+    )
+    assert crashed.returncode == 4
+    assert "RuntimeError: injected failure" in crashed.stderr
+    # The hint is a command that can be pasted: both paths have spaces and are quoted.
+    hint = f"`python -m llm_automation_evals report '{task_dir}' '{out_dir / 'outputs.json'}'`"
+    assert f"The replies are saved in '{out_dir / 'outputs.json'}'. Once the problem is fixed, {hint}" in crashed.stderr
+    assert sorted(path.name for path in out_dir.iterdir()) == ["outputs.json"]
+
+    saved_text = read(out_dir, "outputs.json")
+    saved = json.loads(saved_text)
+    assert [o["case_id"] for o in saved["outputs"]] == [case.id for case in stub.suite.cases]
+    assert {o["case_id"]: o["text"] for o in saved["outputs"]} == stub.replies
+    assert (saved["task"], saved["model"], saved["endpoint_host"]) == ("ticket_classifier", "stub-model", "127.0.0.1")
+    for secret in (API_KEY, stub.base_url, str(stub.port), "/v1", "eval work dir"):
+        assert secret not in saved_text
+
+    requests_before = len(stub.requests)
+    result = cli("report", task_dir, out_dir, cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    assert "ticket_classifier: 27/30 (90.0%) passed; 3 failed, 0 with no verdict" in result.stdout
+    assert len(stub.requests) == requests_before
+    report = json.loads(read(out_dir, "report.json"))
+    assert (report["model"], report["timestamp"], report["temperature"]) == ("stub-model", saved["timestamp"], 0)
+    assert {c["id"]: c["raw_output"] for c in report["cases"]} == stub.replies
+
+    # A run that finishes leaves only the report: the replies are in report.json.
+    clean = workdir / "clean run"
+    assert cli("run", task_dir, "--out", clean, cwd=workdir, stub=stub).returncode == 0
+    assert sorted(path.name for path in clean.iterdir()) == ["report.json", "report.md"]
+    # Same replies, same suite: the recovered report can differ only in when it ran.
+    recovered, direct = read(out_dir, "report.md").splitlines(), read(clean, "report.md").splitlines()
+    assert len(recovered) == len(direct)
+    assert all(a.startswith("| Timestamp (UTC) | ") for a, b in zip(recovered, direct) if a != b)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sends SIGINT to the subprocess")
+def test_an_interrupted_run_keeps_the_replies_that_had_arrived(workdir, task_dir, stub):
+    slow = ["abstain-05", "abstain-06"]
+    for case_id in slow:
+        stub.delays[case_id] = 30.0
+    out_dir = workdir / "interrupted run"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "llm_automation_evals", "run", str(task_dir), "--out", str(out_dir)],
+        cwd=workdir, env=cli_env(stub), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while stub.answered < 28 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert stub.answered == 28
+        time.sleep(0.5)  # let the last replies travel from the socket into the run
+        process.send_signal(signal.SIGINT)
+        _, stderr = process.communicate(timeout=30)
+    finally:
+        process.kill()
+
+    assert process.returncode == 130
+    assert "Traceback" not in stderr
+    assert "Interrupted with 28 of 30 replies in; they are saved in" in stderr
+    assert sorted(path.name for path in out_dir.iterdir()) == ["outputs.json"]
+    saved = json.loads(read(out_dir, "outputs.json"))
+    assert [o["case_id"] for o in saved["outputs"]] == [c.id for c in stub.suite.cases if c.id not in slow]
+
+    result = cli("report", task_dir, out_dir, cwd=workdir)
+    assert result.returncode == 3
+    assert "ticket_classifier: 28/30 (93.3%) passed; 0 failed, 2 with no verdict" in result.stdout
+    errors = read(out_dir, "report.md").split("## Errors")[1]
+    assert "- `abstain-05` (expects abstain): no saved output for this case" in errors
 
 
 def test_no_arguments_prints_usage(workdir):

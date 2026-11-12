@@ -473,12 +473,15 @@ async def collect_outputs(
     transport: Optional[httpx.AsyncBaseTransport] = None,
     log: Log = lambda message: None,
     sleep: Callable[[float], Any] = asyncio.sleep,
+    on_output: Optional[Callable[[RawOutput], None]] = None,
 ) -> list[RawOutput]:
     """Call the model once per case and return the raw replies in case order.
 
     `judge` adds the LLM judge to every case it applies to; without it the
     judge is called only for cases that list `llm_judge` themselves.
-    `transport` lets tests substitute the HTTP layer.
+    `transport` lets tests substitute the HTTP layer. `on_output` is called
+    with each case's output as it is completed, in whatever order that is,
+    so a caller that is interrupted still has the ones that arrived.
     """
     task = suite.task
     if timeout is not None:
@@ -511,6 +514,8 @@ async def collect_outputs(
                     endpoint.judge_model or endpoint.model,
                     scorer.build_messages(render_prompt(task, case), candidate),
                 )
+            if on_output is not None:
+                on_output(output)
             return output
 
         # gather returns results in argument order, whatever order the

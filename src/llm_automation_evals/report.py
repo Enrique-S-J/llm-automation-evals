@@ -26,6 +26,7 @@ from .models import (
     ConfigError,
     RawOutput,
     Report,
+    SavedOutputs,
     ScorerSummary,
     Totals,
 )
@@ -35,6 +36,9 @@ from .scorers import NO_VERDICT, case_status, parse_output, score_case
 SCHEMA_VERSION = 1
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
+# Raw outputs of a run that has not produced its report yet. `run` writes it
+# before scoring and removes it once the report is on disk.
+OUTPUTS_JSON = "outputs.json"
 
 # Confusion-table column for a reply whose label is missing, unparseable, or
 # not one of the schema's values.
@@ -391,10 +395,24 @@ def write_report(out_dir: Union[str, Path], report: Report) -> tuple[Path, Path]
     was one, exactly as it was, not half of a new one.
     """
     directory = Path(out_dir)
-    directory.mkdir(parents=True, exist_ok=True)
     json_path = directory / REPORT_JSON
     md_path = directory / REPORT_MD
-    rendered = [(json_path, render_json(report)), (md_path, render_markdown(report))]
+    _write_together([(json_path, render_json(report)), (md_path, render_markdown(report))])
+    return json_path, md_path
+
+
+def write_outputs(out_dir: Union[str, Path], saved: SavedOutputs) -> Path:
+    """Write a run's raw outputs to outputs.json in out_dir."""
+    path = Path(out_dir) / OUTPUTS_JSON
+    text = json.dumps(saved.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
+    _write_together([(path, encodable(text))])
+    return path
+
+
+def _write_together(rendered: list[tuple[Path, str]]) -> None:
+    """Write every file or none: stage each beside its target, then move."""
+    for path, _ in rendered:
+        path.parent.mkdir(parents=True, exist_ok=True)
     staged: list[tuple[Path, Path]] = []
     try:
         for path, text in rendered:
@@ -408,7 +426,33 @@ def write_report(out_dir: Union[str, Path], report: Report) -> tuple[Path, Path]
         for scratch, _ in staged:
             scratch.unlink(missing_ok=True)
         raise
-    return json_path, md_path
+
+
+def _read_json(source: Path) -> Any:
+    try:
+        return json.loads(source.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ConfigError(f"report '{source}' does not exist") from None
+    except OSError as exc:
+        raise ConfigError(f"cannot read report '{source}': {exc.strerror}") from None
+    except ValueError:
+        raise ConfigError(f"report '{source}' is not valid JSON") from None
+
+
+def _problems(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc']) or '(top level)'}: {err['msg']}"
+        for err in exc.errors()[:3]
+    )
+
+
+def _as_report(raw: Any, source: Path) -> Report:
+    try:
+        return Report.model_validate(raw)
+    except ValidationError as exc:
+        raise ConfigError(
+            f"'{source}' is not a report this version can read: {_problems(exc)}"
+        ) from None
 
 
 def load_report(path: Union[str, Path]) -> Report:
@@ -416,22 +460,41 @@ def load_report(path: Union[str, Path]) -> Report:
     source = Path(path)
     if source.is_dir():
         source = source / REPORT_JSON
-    try:
-        raw = json.loads(source.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise ConfigError(f"report '{source}' does not exist") from None
-    except OSError as exc:
-        raise ConfigError(f"cannot read report '{source}': {exc.strerror}") from None
-    except ValueError:
-        raise ConfigError(f"report '{source}' is not valid JSON") from None
-    try:
-        return Report.model_validate(raw)
-    except ValidationError as exc:
-        problems = "; ".join(
-            f"{'.'.join(str(p) for p in err['loc']) or '(top level)'}: {err['msg']}"
-            for err in exc.errors()[:3]
-        )
-        raise ConfigError(f"'{source}' is not a report this version can read: {problems}") from None
+    return _as_report(_read_json(source), source)
+
+
+def load_saved(path: Union[str, Path]) -> tuple[SavedOutputs, Path]:
+    """Read the raw outputs of a saved run, and say which file they came from.
+
+    The source is a report.json, an outputs.json left by a run that did not
+    get as far as its report, or a run directory holding either. In a
+    directory the report wins: it is the finished run.
+    """
+    source = Path(path)
+    if source.is_dir():
+        report, outputs = source / REPORT_JSON, source / OUTPUTS_JSON
+        source = outputs if outputs.is_file() and not report.exists() else report
+    raw = _read_json(source)
+    if isinstance(raw, dict) and "outputs" in raw and "cases" not in raw:
+        try:
+            return SavedOutputs.model_validate(raw), source
+        except ValidationError as exc:
+            raise ConfigError(
+                f"'{source}' is not a set of saved outputs this version can read: {_problems(exc)}"
+            ) from None
+    report = _as_report(raw, source)
+    saved = SavedOutputs(
+        schema_version=report.schema_version,
+        task=report.task,
+        model=report.model,
+        endpoint_host=report.endpoint_host,
+        timestamp=report.timestamp,
+        temperature=report.temperature,
+        judge_enabled=report.judge_enabled,
+        judge_model=report.judge_model,
+        outputs=outputs_from_report(report),
+    )
+    return saved, source
 
 
 def outputs_from_report(report: Report) -> list[RawOutput]:

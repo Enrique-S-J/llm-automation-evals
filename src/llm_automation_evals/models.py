@@ -160,6 +160,33 @@ class RawOutput(BaseModel):
     judge_error: Optional[str] = None
 
 
+def _known_version(value: int) -> int:
+    if value != 1:
+        raise ValueError(f"unsupported schema_version {value}; this version reads 1")
+    return value
+
+
+class SavedOutputs(BaseModel):
+    """The raw outputs of a run, with what describes how they were produced.
+
+    Written to outputs.json as soon as the last reply is in, before any
+    scoring, so that a failure between there and the finished report does
+    not cost the replies. A report holds the same information.
+    """
+
+    schema_version: int
+    task: str
+    model: str
+    endpoint_host: str
+    timestamp: str
+    temperature: Union[int, float]
+    judge_enabled: bool = False
+    judge_model: Optional[str] = None
+    outputs: list[RawOutput]
+
+    _version = field_validator("schema_version")(_known_version)
+
+
 class ScoreResult(BaseModel):
     scorer: str
     passed: bool
@@ -236,9 +263,4 @@ class Report(BaseModel):
     confusion: Optional[Confusion] = None
     cases: list[CaseResult]
 
-    @field_validator("schema_version")
-    @classmethod
-    def _known_version(cls, value: int) -> int:
-        if value != 1:
-            raise ValueError(f"unsupported report schema_version {value}; this version reads 1")
-        return value
+    _version = field_validator("schema_version")(_known_version)
