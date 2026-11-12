@@ -455,12 +455,54 @@ def test_missing_endpoint_variables_are_named_in_the_error():
         Endpoint.from_env(NAMES, {"EVAL_BASE_URL": "http://localhost:11434/v1"})
 
 
-@pytest.mark.parametrize("url", ["llm.test:8000/v1", "ftp://llm.test/v1", "http:///v1"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "llm.test:8000/v1",
+        "ftp://llm.test/v1",
+        "http:///v1",
+        # Each of these used to get past this check and end in a traceback.
+        "http://llm.test:99999/v1",
+        "http://llm.test:abc/v1",
+        "http://[::1/v1",
+        "http://llm .test/v1",
+        "http://llm.test/v1#section",
+    ],
+)
 def test_a_base_url_that_is_not_http_is_rejected_without_echoing_it(url):
     with pytest.raises(ConfigError) as excinfo:
         Endpoint.from_env(NAMES, {"EVAL_BASE_URL": url, "EVAL_MODEL": "m"})
     assert "must be an http(s) URL" in str(excinfo.value)
     assert url not in str(excinfo.value)
+
+
+def test_a_query_string_on_the_base_url_stays_a_query_string():
+    """Some gateways version their API with a query parameter.
+
+    The route used to be appended to the raw string, which put it inside the
+    query: /v1?api-version=1/chat/completions.
+    """
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return completion(reply())
+
+    endpoint = Endpoint.from_env(
+        NAMES, {"EVAL_BASE_URL": "http://llm.test/v1/?api-version=2024-06-01", "EVAL_MODEL": "m"}
+    )
+    run(make_suite(), handler, endpoint=endpoint)
+    assert seen == ["http://llm.test/v1/chat/completions?api-version=2024-06-01"]
+    assert endpoint.host == "llm.test"
+
+
+@pytest.mark.parametrize("key", ["sk-caf\u00e9", "sk-one two", "sk-line\nX-Injected: 1", "sk-\x00"])
+def test_an_api_key_that_cannot_be_a_header_value_is_rejected_without_echoing_it(key):
+    env = {"EVAL_BASE_URL": "http://llm.test/v1", "EVAL_MODEL": "m", "EVAL_API_KEY": key}
+    with pytest.raises(ConfigError) as excinfo:
+        Endpoint.from_env(NAMES, env)
+    assert "EVAL_API_KEY" in str(excinfo.value)
+    assert key not in str(excinfo.value) and "sk-" not in str(excinfo.value)
 
 
 def test_url_credentials_plus_an_api_key_is_rejected():

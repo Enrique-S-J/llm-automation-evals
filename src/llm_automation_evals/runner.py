@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import yaml
@@ -198,7 +198,10 @@ class Endpoint:
 
     @property
     def chat_url(self) -> str:
-        return self.base_url.rstrip("/") + "/chat/completions"
+        # The route is added to the path, not to the end of the string, so a
+        # query string on the base URL stays a query string.
+        parts = urlsplit(self.base_url)
+        return urlunsplit(parts._replace(path=parts.path.rstrip("/") + "/chat/completions"))
 
     @classmethod
     def from_env(cls, names: EndpointEnv, environ: Optional[Mapping[str, str]] = None) -> "Endpoint":
@@ -213,13 +216,28 @@ class Endpoint:
                 f"http://localhost:11434/v1 for Ollama, and set {names.model_env} to a "
                 "model that endpoint serves."
             )
-        parts = urlsplit(base_url)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ConfigError(
-                f"{names.base_url_env} must be an http(s) URL such as "
-                "http://localhost:11434/v1; the value set is not one"
-            )
+        not_a_url = ConfigError(
+            f"{names.base_url_env} must be an http(s) URL such as "
+            "http://localhost:11434/v1; the value set is not one"
+        )
+        # Everything that would make httpx refuse the URL is checked here.
+        # Left to the first request, it surfaces as an exception that is not
+        # an httpx.HTTPError and so is not handled as a request failure.
+        if any(ch.isspace() or not ch.isprintable() for ch in base_url):
+            raise not_a_url
+        try:
+            parts = urlsplit(base_url)
+            parts.port  # raises for a port that is not a number in range
+        except ValueError:
+            raise not_a_url from None
+        if parts.scheme not in ("http", "https") or not parts.hostname or parts.fragment:
+            raise not_a_url
         api_key = env.get(names.api_key_env, "").strip() or None
+        if api_key and not (api_key.isascii() and api_key.isprintable() and " " not in api_key):
+            raise ConfigError(
+                f"{names.api_key_env} contains a character that cannot be sent in an HTTP "
+                "header: whitespace, a control character, or anything outside ASCII"
+            )
         if api_key and (parts.username or parts.password):
             # httpx turns credentials in the URL into a Basic Authorization
             # header that replaces the Bearer one, so the key would silently
@@ -229,7 +247,12 @@ class Endpoint:
                 "set. Only one can be sent; remove one of them."
             )
         judge_model = env.get(names.judge_model_env, "").strip() or None
-        return cls(base_url=base_url, model=model, api_key=api_key, judge_model=judge_model)
+        endpoint = cls(base_url=base_url, model=model, api_key=api_key, judge_model=judge_model)
+        try:
+            httpx.URL(endpoint.chat_url)
+        except httpx.InvalidURL:
+            raise not_a_url from None
+        return endpoint
 
 
 # ---------------------------------------------------------------------------

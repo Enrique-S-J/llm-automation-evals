@@ -420,6 +420,23 @@ def test_missing_endpoint_variables_exit_2_with_instructions(workdir, task_dir):
     assert not (workdir / "runs").exists()
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"EVAL_BASE_URL": "http://127.0.0.1:99999/v1"},
+        {"EVAL_BASE_URL": "http://[::1/v1"},
+        {"EVAL_API_KEY": "sk-caf\u00e9"},
+    ],
+)
+def test_endpoint_settings_that_cannot_work_exit_2_without_a_traceback(workdir, task_dir, stub, env):
+    result = cli("run", task_dir, cwd=workdir, stub=stub, env=env)
+    assert result.returncode == 2, result.stderr
+    assert result.stderr.startswith(f"Error: {next(iter(env))} ")
+    assert "Traceback" not in result.stderr
+    assert stub.requests == []
+    assert not (workdir / "runs").exists()
+
+
 def test_a_broken_suite_exits_2_before_any_request(workdir, task_dir, stub):
     cases = yaml.safe_load(read(task_dir, "cases.yaml"))
     cases["cases"][0]["expect_abstian"] = True
