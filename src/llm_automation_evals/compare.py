@@ -57,8 +57,8 @@ class Comparison:
     regressions: list[Flip] = field(default_factory=list)
     fixes: list[Flip] = field(default_factory=list)
     still_failing: list[str] = field(default_factory=list)
-    # Cases where a request failed on one side, so there is no verdict to
-    # compare: (case id, baseline status, candidate status).
+    # Cases with no verdict on one side, so there is nothing to compare:
+    # (case id, baseline status, candidate status).
     not_comparable: list[tuple[str, str, str]] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
@@ -231,8 +231,8 @@ def render_comparison(comparison: Comparison) -> str:
             "",
             f"## Not comparable ({len(comparison.not_comparable)})",
             "",
-            "A request failed on at least one side, so there is no verdict to compare. "
-            "These are neither regressions nor fixes.",
+            "At least one side has no verdict, because a request failed or a required judge "
+            "gave no grade. These are neither regressions nor fixes.",
             "",
         ]
         lines += [

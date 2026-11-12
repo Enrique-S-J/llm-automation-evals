@@ -100,7 +100,7 @@ def build_report(
             result.scores = score_case(task, case, output, judge)
             result.status = case_status(result.scores)
             if result.status == "error":
-                # The model answered; a required judge could not be asked.
+                # The model answered; a required judge gave no grade.
                 result.error = next(
                     s.detail for s in result.scores if s.required and s.data.get(NO_VERDICT)
                 )
@@ -274,7 +274,7 @@ def render_markdown(report: Report) -> str:
         "",
         f"- Passed: {totals.passed}",
         f"- Failed: {totals.failed}",
-        f"- Errors (a request failed, no verdict): {totals.errors}",
+        f"- Errors (no verdict): {totals.errors}",
         f"- Replies wrapped in a code fence: {totals.fenced_outputs} of {totals.outputs}"
         " (stripped before scoring; a prompt-quality signal, not a failure)",
         "",
@@ -338,8 +338,8 @@ def render_markdown(report: Report) -> str:
         lines += [
             "## Errors",
             "",
-            "A request failed for these cases, so they have no verdict: the request for the "
-            "model's reply, or one to a judge the case requires.",
+            "These cases have no verdict. Either the request for the model's reply failed, or "
+            "a judge the case requires could not be reached or returned no usable grade.",
             "",
         ]
         lines += [f"- `{r.id}`{_flags(r)}: {r.error}" for r in errored]

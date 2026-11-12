@@ -33,7 +33,8 @@ MAX_DEPTH = 64
 
 # Key set in ScoreResult.data when a scorer could not reach a verdict at all,
 # as opposed to reaching a negative one. Only the judge can be in that
-# position: its grade comes from a second request, and requests fail.
+# position: its grade comes from a second request, and that request can fail
+# or come back without a grade in it.
 NO_VERDICT = "no_verdict"
 
 
@@ -428,7 +429,11 @@ class LlmJudgeScorer(Scorer):
         if isinstance(grade, float) and grade.is_integer():
             grade = int(grade)
         if isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 5:
-            return self._result(False, "judge reply had no integer score from 1 to 5")
+            # The judge answered, but not with a grade. The model's reply
+            # was not assessed, which is not the same as a low mark.
+            return self._result(
+                False, "judge reply had no integer score from 1 to 5", data={NO_VERDICT: True}
+            )
         reason = reply.get("reason")
         data = {"reason": _clip(reason)} if isinstance(reason, str) else {}
         return self._result(
@@ -488,7 +493,8 @@ def case_status(scores: list[ScoreResult]) -> str:
 
     A required scorer that reached a negative verdict fails the case. If
     none did, but a required scorer could not reach a verdict (the judge
-    request failed), the case is an error: an outage, not a wrong answer.
+    request failed, or its reply held no grade), the case is an error: the
+    answer was never assessed, which is not a wrong answer.
     """
     required = [result for result in scores if result.required]
     if any(not r.passed and not r.data.get(NO_VERDICT) for r in required):

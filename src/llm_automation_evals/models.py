@@ -172,8 +172,8 @@ class ScoreResult(BaseModel):
 
 class CaseResult(BaseModel):
     id: str
-    # "error" means a request failed and the case has no verdict: the model
-    # never replied, or a judge the case requires could not be reached. It
+    # "error" means the case has no verdict: the model never replied, or a
+    # judge the case requires could not be reached or returned no grade. It
     # is kept apart from "failed" so an endpoint outage does not read as a
     # model regression.
     status: Literal["passed", "failed", "error"]

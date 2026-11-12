@@ -305,7 +305,7 @@ def test_run_exits_3_and_lists_the_case_when_a_request_keeps_failing(workdir, ta
 
     assert result.returncode == 3
     assert "net-02: HTTP 500, retrying once" in result.stderr
-    assert "Incomplete: 1 of 30 cases have no verdict because a request failed." in result.stderr
+    assert "Incomplete: 1 of 30 cases have no verdict (a request failed, or a required judge gave no grade)." in result.stderr
     # One retry, so exactly two requests for that case and one for the rest.
     assert stub.count("net-02") == 2
     assert len(stub.requests) == 31

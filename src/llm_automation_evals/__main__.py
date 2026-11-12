@@ -9,7 +9,8 @@ Exit codes:
   1  a gate failed: `run`/`report` below --fail-under, or `compare` found
      regressions or cases missing from the candidate
   2  usage or configuration error; nothing was run
-  3  the run is incomplete: a request failed and at least one case has no verdict
+  3  the run is incomplete: at least one case has no verdict, because a
+     request failed or a judge the case requires gave no grade
   4  the harness itself failed; a bug, not a result
 """
 
@@ -163,7 +164,8 @@ def _finish(report: Report, out_dir: Path, fail_under: Optional[Fraction]) -> in
     print(f"data:   {json_path}")
     if totals.errors:
         _err(
-            f"Incomplete: {totals.errors} of {totals.cases} cases have no verdict because a request failed. "
+            f"Incomplete: {totals.errors} of {totals.cases} cases have no verdict "
+            "(a request failed, or a required judge gave no grade). "
             "The pass rate above counts them as not passed; see the Errors section."
         )
         return EXIT_INCOMPLETE

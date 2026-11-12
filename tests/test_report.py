@@ -166,7 +166,7 @@ def test_request_errors_are_listed_apart_from_failures():
     errored = next(case for case in report.cases if case.id == "o1")
     assert errored.scores == [] and errored.raw_output is None
     markdown = render_markdown(report)
-    assert "- Errors (a request failed, no verdict): 1" in markdown
+    assert "- Errors (no verdict): 1" in markdown
     assert "- `o1`: HTTP 503 (after 1 retry)" in markdown.split("## Errors")[1]
 
 
@@ -254,6 +254,28 @@ def test_a_required_judge_that_could_not_be_reached_is_an_error_not_a_failure():
     assert "suite changed" not in render_comparison(comparison)
 
     # Re-scoring the saved report reaches the same verdict.
+    assert render_json(build(suite=suite, outputs=outputs_from_report(candidate))) == render_json(candidate)
+
+
+def test_a_required_judge_that_answered_without_a_grade_is_an_error_not_a_failure():
+    suite = make_suite(make_case("v1", scorers=REQUIRED_JUDGE), make_case("v2"))
+    graded = [out(reply(), "v1", judge_text='{"score": 4, "reason": "Fine."}'), out(reply(), "v2")]
+    prose = [out(reply(), "v1", judge_text="I would rate this a 4 out of 5."), out(reply(), "v2")]
+
+    baseline, candidate = build(suite=suite, outputs=graded), build(suite=suite, outputs=prose)
+    assert statuses(candidate) == {"v1": "error", "v2": "passed"}
+    assert candidate.cases[0].error == "judge reply had no integer score from 1 to 5"
+    assert candidate.cases[0].judge_raw_output == "I would rate this a 4 out of 5."
+    markdown = render_markdown(candidate)
+    assert "- Errors (no verdict): 1" in markdown
+    errors = markdown.split("## Errors")[1]
+    assert "or returned no usable grade" in errors
+    assert "- `v1`: judge reply had no integer score from 1 to 5" in errors
+
+    comparison = compare_reports(baseline, candidate)
+    assert comparison.regressions == []
+    assert comparison.not_comparable == [("v1", "passed", "error")]
+    assert "or a required judge gave no grade" in render_comparison(comparison)
     assert render_json(build(suite=suite, outputs=outputs_from_report(candidate))) == render_json(candidate)
 
 

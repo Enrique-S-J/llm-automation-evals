@@ -392,13 +392,48 @@ def test_judge_fails_below_the_minimum_score():
 
 @pytest.mark.parametrize(
     "judge_text",
-    ["I would give this a 4.", '{"score": 9}', '{"score": true}', '{"score": "4"}', '{"grade": 4}'],
+    [
+        "I would give this a 4.",
+        "",
+        '{"score": 9}',
+        '{"score": 6}',
+        '{"score": 0}',
+        '{"score": 4.5}',
+        '{"score": true}',
+        '{"score": "4"}',
+        '{"grade": 4}',
+    ],
 )
-def test_judge_fails_a_reply_without_a_usable_score(judge_text):
-    result = scorer(LlmJudgeScorer).score(make_case(), judged(judge_text))
+def test_a_judge_reply_without_a_usable_score_is_no_verdict_not_a_low_grade(judge_text):
+    """A judge that answered in prose graded nothing.
+
+    This used to be a plain failure. On a case that requires the judge it
+    was counted against the model, and compare called it a regression,
+    although the model's reply had never been assessed.
+    """
+    result = scorer(LlmJudgeScorer, required=True).score(make_case(), judged(judge_text))
     assert not result.passed
     assert result.score is None
     assert result.detail == "judge reply had no integer score from 1 to 5"
+    assert result.data == {"no_verdict": True}
+    assert case_status([result]) == "error"
+
+
+def test_the_judge_accepts_the_lowest_and_the_highest_grade():
+    low = scorer(LlmJudgeScorer, min_score=1).score(make_case(), judged('{"score": 1}'))
+    high = scorer(LlmJudgeScorer).score(make_case(), judged('{"score": 5.0}'))
+    assert (low.passed, low.score, high.passed, high.score) == (True, 1.0, True, 5.0)
+
+
+def test_a_summary_of_nothing_but_whitespace_is_not_sent_to_the_judge():
+    judge = scorer(LlmJudgeScorer)
+    assert judge.candidate(out(reply(summary="Desk phone is dead."))) == "Desk phone is dead."
+    for blank in (reply(summary=" \n\t"), reply(summary=""), reply(summary=7), "not json"):
+        assert judge.candidate(out(blank)) is None
+    result = judge.score(make_case(), out(reply(summary="   "), judge_text='{"score": 5}'))
+    # Nothing to grade is the model's doing, so it is a verdict.
+    assert not result.passed and result.data == {}
+    assert result.detail == "output has no 'summary' text to grade"
 
 
 def test_judge_fails_when_the_judge_call_failed_or_never_happened():
