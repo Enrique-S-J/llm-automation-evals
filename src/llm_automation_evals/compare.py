@@ -13,6 +13,11 @@ from .models import CaseResult, Report
 from .report import code_span, encodable, fraction
 
 
+def _span(value: Any) -> str:
+    # Every value this module prints sits in a bullet, never in a table cell.
+    return code_span(value, in_table=False)
+
+
 @dataclass(frozen=True)
 class Flip:
     """A case whose pass/fail status differs between the two reports."""
@@ -133,12 +138,12 @@ def _count(count: int, singular: str, plural: str) -> str:
 def _shown(actual: Optional[dict[str, Any]], name: str) -> str:
     if actual is None:
         return "(not parseable)"
-    return code_span(actual[name]) if name in actual else "(missing)"
+    return _span(actual[name]) if name in actual else "(missing)"
 
 
 def _describe(report: Report) -> str:
     return (
-        f"{code_span(report.model)} at {code_span(report.endpoint_host)}, {report.timestamp}: "
+        f"{_span(report.model)} at {_span(report.endpoint_host)}, {report.timestamp}: "
         f"{fraction(report.totals.passed, report.totals.cases)}"
     )
 
@@ -153,7 +158,7 @@ def _flip_line(flip: Flip, failed_side: str) -> str:
         now = flip.candidate_actual.get(name) if flip.candidate_actual is not None else None
         if was != now:
             changes.append(
-                f"`{name}` expected {code_span(want)}, "
+                f"`{name}` expected {_span(want)}, "
                 f"was {_shown(flip.baseline_actual, name)}, now {_shown(flip.candidate_actual, name)}"
             )
     detail = "; " + "; ".join(changes) if changes else ""

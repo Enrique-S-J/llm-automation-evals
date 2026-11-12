@@ -308,6 +308,30 @@ def test_model_text_cannot_break_out_of_the_report_markdown():
             assert line.count("`") >= 2, line
 
 
+def test_pipes_are_escaped_in_table_cells_and_nowhere_else():
+    """`\\|` inside a code span is a pipe in a table cell and two characters anywhere else.
+
+    Escaping everywhere put a stray backslash in every bullet that held a
+    pipe, and the keyword scorer joins alternatives with one, so an ordinary
+    missed keyword rendered as `voicemail \\| voice mail`.
+    """
+    case = make_case("v1", keywords={"must_contain": [["voicemail", "voice mail"]]})
+    piped = reply(category="voice | network", summary="Phone issue.")
+    baseline = build(suite=make_suite(case), outputs=[out(reply(summary="Voicemail is down."), "v1")])
+    candidate = build(suite=make_suite(case), outputs=[out(piped, "v1")])
+    markdown = render_markdown(candidate)
+
+    # In the failures table the pipe must be escaped or the row gains a cell.
+    assert "| `category` | `voice` | `voice \\| network` |" in markdown
+    # In a bullet the same escape would show up as a literal backslash.
+    assert "- `keyword` (required): `summary missing: voicemail | voice mail`" in markdown
+    assert "\\|" not in "\n".join(line for line in markdown.splitlines() if line.startswith("- "))
+
+    comparison = render_comparison(compare_reports(baseline, candidate))
+    assert "`category` expected `voice`, was `voice`, now `voice | network`" in comparison
+    assert "\\|" not in comparison
+
+
 def test_long_raw_output_is_truncated_in_markdown_but_kept_whole_in_json():
     rambling = "word " * 600
     report = build(suite=make_suite(make_case("v1")), outputs=[out(rambling, "v1")])

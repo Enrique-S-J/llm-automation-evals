@@ -208,12 +208,16 @@ def fraction(passed: int, total: int) -> str:
     return f"{passed}/{total} ({100 * passed / total:.1f}%)"
 
 
-def code_span(value: Any, limit: int = 80) -> str:
-    """Render a value as an inline code span that is safe in a table cell.
+def code_span(value: Any, limit: int = 80, *, in_table: bool = True) -> str:
+    """Render a value as an inline code span that cannot break its surroundings.
 
     Everything the model wrote goes through here or through `_block`. A
     report is meant to be pasted into a pull request, where bare model text
     could close a table, open a fence, or @-mention someone.
+
+    Inside a table cell a pipe has to be escaped even within a code span, or
+    it ends the cell. Outside a table the same backslash is rendered
+    literally, so callers that are not writing a cell pass `in_table=False`.
     """
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
     text = " ".join(text.split())
@@ -221,7 +225,8 @@ def code_span(value: Any, limit: int = 80) -> str:
         return "(empty)"
     if len(text) > limit:
         text = text[: limit - 3] + "..."
-    text = text.replace("|", "\\|")
+    if in_table:
+        text = text.replace("|", "\\|")
     runs = re.findall(r"`+", text)
     ticks = "`" * (max(map(len, runs)) + 1 if runs else 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
@@ -323,7 +328,9 @@ def render_markdown(report: Report) -> str:
         for score in result.scores:
             if not score.passed:
                 kind = "required" if score.required else "advisory"
-                lines.append(f"- `{score.scorer}` ({kind}): {code_span(score.detail, limit=300)}")
+                lines.append(
+                    f"- `{score.scorer}` ({kind}): {code_span(score.detail, limit=300, in_table=False)}"
+                )
         lines += ["", "Raw output:", "", *_block(result.raw_output or ""), ""]
 
     errored = [r for r in report.cases if r.status == "error"]
@@ -343,7 +350,10 @@ def render_markdown(report: Report) -> str:
     ]
     if advisory:
         lines += ["## Advisory misses", "", "Cases that passed while a non-required scorer did not.", ""]
-        lines += [f"- `{r.id}` `{s.scorer}`: {code_span(s.detail, limit=300)}" for r, s in advisory]
+        lines += [
+            f"- `{r.id}` `{s.scorer}`: {code_span(s.detail, limit=300, in_table=False)}"
+            for r, s in advisory
+        ]
         lines.append("")
 
     return encodable("\n".join(lines).rstrip("\n") + "\n")
