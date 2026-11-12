@@ -4,6 +4,8 @@ Scorers are pure functions of a case and a saved output, so everything here
 runs without a model or a network.
 """
 
+import time
+
 import pytest
 
 from helpers import ABSTAIN, abstain_case, make_case, make_task, out, reply
@@ -48,6 +50,48 @@ def test_one_enclosing_code_fence_is_stripped_and_recorded(text):
     parsed = parse_output(text)
     assert parsed.value == {"a": 1}
     assert parsed.fenced is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```json\n" + "\n" * 4000,  # a fence opened, then blank lines until the token limit
+        "```" + " " * 4000 + "x",
+        "```json\n" + " \n" * 2000 + "```x",
+    ],
+)
+def test_a_fence_followed_by_a_run_of_whitespace_is_parsed_in_linear_time(text):
+    """A model that opens a fence and then emits whitespace until it is cut off.
+
+    The fence used to be matched by one regular expression with three
+    adjacent whitespace quantifiers. On a reply like these it backtracked
+    cubically: 4000 newlines took about 20 seconds, per call, and a reply of
+    10 KB would not finish. The time limit is loose; the old code missed it
+    by an order of magnitude.
+    """
+    started = time.perf_counter()
+    parsed = parse_output(text)
+    assert time.perf_counter() - started < 2.0
+    assert parsed.error and parsed.obj is None
+
+
+@pytest.mark.parametrize(
+    "text,fenced",
+    [
+        ("```", False),  # too short to be an opening and a closing fence
+        ("`````", False),
+        ("``````", True),  # an empty fenced block
+        ("```json\n```", True),
+        ('```json{"a": 1}```', True),  # a tag must be followed by whitespace
+        ('````json\n{"a": 1}\n````', True),  # the fourth backtick is payload
+        ('```json\n{"a": 1}\n```\n```json\n{"a": 2}\n```', True),  # two blocks
+        ('~~~\n{"a": 1}\n~~~', False),
+    ],
+)
+def test_fence_shapes_that_are_not_one_plain_block_do_not_parse(text, fenced):
+    parsed = parse_output(text)
+    assert parsed.error and parsed.obj is None
+    assert parsed.fenced is fenced
 
 
 def test_unfenced_json_is_not_recorded_as_fenced():

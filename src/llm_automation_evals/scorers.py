@@ -18,10 +18,10 @@ from jsonschema import Draft202012Validator
 
 from .models import Case, ConfigError, RawOutput, ScoreResult, ScorerSpec, Task
 
-# A reply that is one fenced block and nothing else: optional language tag,
-# then the payload. Prose around the block is deliberately not handled; a
-# reply that needs a human to find the JSON in it is not strict JSON.
-_FENCED = re.compile(r"\A\s*```(?:[A-Za-z0-9_+-]*\s)?\s*(.*?)\s*```\s*\Z", re.DOTALL)
+_FENCE = "```"
+# The language tag after an opening fence, with the whitespace that ends it.
+# The two parts cannot match the same character, so this cannot backtrack.
+_FENCE_TAG = re.compile(r"[A-Za-z0-9_+-]*\s")
 
 _DETAIL_LIMIT = 300
 
@@ -75,6 +75,28 @@ def _too_deep(value: Any) -> bool:
     return False
 
 
+def _unfence(text: str) -> Optional[str]:
+    """The payload of a reply that is one fenced block and nothing else.
+
+    None when the reply is not one: prose around the block is deliberately
+    not handled, since a reply that needs a human to find the JSON in it is
+    not strict JSON. Done with string operations, each a single pass. As one
+    regular expression this had three adjacent whitespace quantifiers, and a
+    reply that opened a fence and then ran on in whitespace took time cubic
+    in its length.
+    """
+    stripped = text.strip()
+    if len(stripped) < 2 * len(_FENCE) or not (
+        stripped.startswith(_FENCE) and stripped.endswith(_FENCE)
+    ):
+        return None
+    inner = stripped[len(_FENCE) : -len(_FENCE)]
+    tag = _FENCE_TAG.match(inner)
+    if tag:
+        inner = inner[tag.end() :]
+    return inner.strip()
+
+
 def parse_output(text: Optional[str]) -> ParsedOutput:
     """Parse a model reply as JSON, stripping one enclosing code fence.
 
@@ -85,9 +107,9 @@ def parse_output(text: Optional[str]) -> ParsedOutput:
     """
     if text is None:
         return ParsedOutput(error="no output")
-    match = _FENCED.match(text)
-    body = match.group(1) if match else text
-    fenced = bool(match)
+    payload = _unfence(text)
+    fenced = payload is not None
+    body = payload if fenced else text
     try:
         # json.loads accepts NaN and Infinity by default; strict JSON does not.
         value = json.loads(body, parse_constant=_reject_constant, parse_float=_finite_float)
