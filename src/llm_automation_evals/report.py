@@ -141,22 +141,22 @@ def build_report(
         judge_enabled=judge,
         judge_model=judge_model if (judge or judge_ran) else None,
         totals=totals,
-        by_scorer=_summarise_scorers(results),
+        by_scorer=_summarise_scorers(suite, results),
         confusion=_confusion(suite, results),
         cases=results,
     )
 
 
-def _summarise_scorers(results: list[CaseResult]) -> list[ScorerSummary]:
-    # In order of first appearance, which follows the task's scorer list.
-    order: list[str] = []
+def _summarise_scorers(suite: Suite, results: list[CaseResult]) -> list[ScorerSummary]:
     grouped: dict[str, list] = {}
     for result in results:
         for score in result.scores:
-            if score.scorer not in grouped:
-                order.append(score.scorer)
-                grouped[score.scorer] = []
-            grouped[score.scorer].append(score)
+            grouped.setdefault(score.scorer, []).append(score)
+    # The task's scorers in the order the task lists them, then any that
+    # only a case's own list or the judge flag brought in, in order of
+    # first appearance.
+    listed = [spec.label for spec in suite.task.scorers if spec.label in grouped]
+    order = listed + [name for name in grouped if name not in listed]
     summaries = []
     for name in order:
         scores = grouped[name]

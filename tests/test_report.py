@@ -661,6 +661,28 @@ def test_compare_and_the_report_print_the_same_percentage_for_the_same_run():
         assert f"| `category_match` | {shown} | {shown} | 0.0 pts |" in text
 
 
+def test_scorer_rows_follow_the_task_list_with_anything_else_after_it():
+    """With --judge the judge row used to land in the middle of the table.
+
+    Rows were in order of first appearance across the cases: the judge is
+    on the first ordinary case, and safe_failure first shows up on an
+    abstain case further down.
+    """
+    own_list = ["json_schema", {"type": "exact_field", "name": "all_fields"}]
+    suite = make_suite(make_case("v1", scorers=own_list), make_case("v2"), abstain_case("a1"))
+    outputs = [
+        out(reply(), "v1", judge_text='{"score": 4}'),
+        out(reply(), "v2", judge_text='{"score": 4}'),
+        out(ABSTAIN, "a1"),
+    ]
+    report = build(suite=suite, outputs=outputs, judge=True, judge_model="m")
+    assert [s.scorer for s in report.by_scorer] == [
+        "json_schema", "category_match", "priority_match", "safe_failure", "all_fields", "llm_judge",
+    ]
+    comparison = compare_reports(report, report)
+    assert [d.name for d in comparison.deltas] == ["overall", *(s.scorer for s in report.by_scorer)]
+
+
 def test_compare_says_when_a_flip_comes_from_the_suite_and_not_the_model():
     """Same outputs, a relabelled case: a regression, but not the model's doing."""
     relabelled = [
