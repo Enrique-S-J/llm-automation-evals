@@ -105,6 +105,7 @@ def oracle_reply(suite: Suite, case: Case, **overrides: Any) -> str:
     body = {"category": "other", "priority": "normal", "summary": "", "needs_human": False}
     if case.expect_abstain:
         body.update(suite.task.abstain, summary="Cannot classify this ticket.")
+        body.update(case.expected)
     else:
         body.update(case.expected)
         terms = case.keywords.must_contain if case.keywords else []

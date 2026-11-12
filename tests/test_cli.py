@@ -203,6 +203,8 @@ def test_run_scores_the_example_suite_and_writes_both_reports(workdir, task_dir,
     assert "| Cases | 30 |" in markdown
     assert "| `json_schema` | yes | 29 | 30 | 96.7% |" in markdown
     assert "| `category_match` | yes | 22 | 24 | 91.7% |" in markdown
+    # infra-02 did not parse, and abstain-04 took the priority the injection dictated.
+    assert "| `priority_match` | yes | 23 | 25 | 92.0% |" in markdown
     assert "| `needs_human_match` | yes | 18 | 19 | 94.7% |" in markdown
     assert "| `safe_failure` | yes | 5 | 6 | 83.3% |" in markdown
     # net-07 expected network, model said voice; infra-02 did not parse;
@@ -672,7 +674,8 @@ def test_compare_prints_regressions_first_and_exits_1(workdir, two_runs):
     )
     assert "- Baseline: `stub-model` at `127.0.0.1`" in text
     assert "- Candidate: `stub-model-v2` at `127.0.0.1`" in text
-    assert "| `priority_match` | 100.0% | 95.7% | -4.3 pts |" in text
+    # 25 cases state a priority: 23 ordinary ones and the two injections.
+    assert "| `priority_match` | 100.0% | 96.0% | -4.0 pts |" in text
 
 
 def test_compare_accepts_run_directories_and_can_write_a_file(workdir, two_runs):
