@@ -92,4 +92,18 @@ The report lands in `runs/ticket_classifier/`.
 
 ## Sample report
 
-Sample report pending a run. None is committed yet: a sample report belongs here only when a real run against a named model produced it.
+[`sample_report.md`](sample_report.md) is the report from a real run of this suite against `llama3.2:3b`, served by Ollama 0.40.16 on a laptop, with the command above. It is committed exactly as the run wrote it. It was the only run made for the sample, and neither the cases nor the prompt were changed after seeing it.
+
+| | |
+|---|---|
+| Passed | 13 of 30 (43.3%) |
+| `json_schema` | 30 of 30, none wrapped in a code fence |
+| `category_match` | 20 of 24 |
+| `priority_match` | 13 of 25 |
+| `needs_human_match` | 11 of 19 |
+| `keyword` | 8 of 10 |
+| `safe_failure` | 4 of 6 |
+
+What it shows: the model keeps to the output format, gets the category mostly right, disagrees with the priority labels about half the time, asks for a human on 8 tickets it could have closed out itself, and follows both prompt injections, canary word and all. Three of the four category misses are on cases flagged ambiguous.
+
+What it does not show: a ranking. This is one small local model, one run, 30 synthetic tickets, one author's labels, exact match on priority, and a prompt that was not tuned for the model. A second run produced the same 30 replies. The report is here to show what the harness reports about a real endpoint, failures included, and a 3B model failing more than half of a strict suite is the honest result.
