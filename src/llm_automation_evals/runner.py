@@ -26,6 +26,7 @@ from .scorers import (
     LlmJudgeScorer,
     SafeFailureScorer,
     build_scorers,
+    json_equal,
     schema_validator,
     scorers_for,
     specs_for,
@@ -143,7 +144,7 @@ def _enum_of(properties: Any, field: str) -> Optional[list]:
 
 def _check_suite(task: Task, cases: list[Case]) -> None:
     try:
-        schema_validator(task.output_schema)
+        validator = schema_validator(task.output_schema)
     except ConfigError as exc:
         raise ConfigError(f"{TASK_FILE}: {exc}") from None
 
@@ -163,16 +164,37 @@ def _check_suite(task: Task, cases: list[Case]) -> None:
     def check_meetable(source: str, field: str, want: Any) -> None:
         if closed and field not in properties:
             raise ConfigError(f"{source} a field '{field}' that the output schema does not have")
-        enum = _enum_of(properties, field)
-        if enum is not None and want not in enum:
+        if not isinstance(properties, dict) or field not in properties:
+            return
+        # The value is held against the field's own subschema: its enum, its
+        # type, its length. A value that fails it is one no valid reply can
+        # contain, so the case would fail every time and blame the model.
+        errors = sorted(
+            validator.evolve(schema=properties[field]).iter_errors(want),
+            key=lambda e: (e.json_path, e.message),
+        )
+        if errors:
             raise ConfigError(
-                f"{source} {field}={want!r}, which the output schema does not allow (one of {enum})"
+                f"{source} {field}={want!r}, which the output schema does not allow: {errors[0].message}"
             )
+
+    def check_fields_exist(source: str, scorers: list) -> None:
+        for scorer in scorers:
+            if closed and isinstance(scorer, KeywordScorer) and scorer.field not in properties:
+                raise ConfigError(
+                    f"{source}: scorer '{scorer.name}' reads the field '{scorer.field}', "
+                    "which the output schema does not have"
+                )
 
     for field, want in task.abstain.items():
         check_meetable(f"{TASK_FILE}: abstain sets", field, want)
+    if task.judge is not None and closed and task.judge.field not in properties:
+        raise ConfigError(
+            f"{TASK_FILE}: judge.field is '{task.judge.field}', which the output schema does not have"
+        )
 
     task_scorers = build_scorers(task, task.scorers)
+    check_fields_exist(TASK_FILE, task_scorers)
     # Per task-level exact_field scorer: the fields it names that at least
     # one case expects.
     used: dict[str, set[str]] = {
@@ -194,9 +216,17 @@ def _check_suite(task: Task, cases: list[Case]) -> None:
                 f"{where} has no input for template placeholder(s): {', '.join(missing)}"
             )
 
-        # An expectation outside the schema can never be met.
+        # An expectation outside the schema can never be met, and neither
+        # can one that contradicts the abstain value on a case that also
+        # expects an abstain.
         for field, want in case.expected.items():
             check_meetable(f"{where} expects", field, want)
+            if case.expect_abstain and field in task.abstain and not json_equal(want, task.abstain[field]):
+                raise ConfigError(
+                    f"{where} is flagged expect_abstain and expects {field}={want!r}, but the "
+                    f"task's abstain value has {field}={task.abstain[field]!r}; no reply could "
+                    "satisfy both"
+                )
 
         # A case that states no expectation would be graded on schema validity
         # alone and pass on any well-formed reply. That is allowed, but only
@@ -217,6 +247,14 @@ def _check_suite(task: Task, cases: list[Case]) -> None:
                 "whatever the model said. Give it 'expected' fields, 'keywords', or "
                 "'expect_abstain: true'."
             )
+        if not any(scorer.required for scorer in in_force):
+            raise ConfigError(
+                f"{CASES_FILE}: no required scorer applies to case '{case.id}', so it would pass "
+                "whatever the model said. A scorer with 'required: false' is reported and does "
+                "not decide the result, and llm_judge is advisory unless a case requires it."
+            )
+        if case.scorers is not None:
+            check_fields_exist(where, listed)
 
         # Everything a case states has to be checked by a scorer in its
         # list. Each scorer skips the cases it has nothing to check on, so a

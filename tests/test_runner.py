@@ -661,6 +661,35 @@ def test_a_misspelled_case_key_is_an_error_not_a_silent_default(tmp_path):
             ),
             "scorer 'exact_field' compares catgory, which case 'voice-1' does not expect",
         ),
+        # Cases that could pass on any reply, or on none. Each loaded.
+        (
+            with_case(expected={}, scorers=["llm_judge"]),  # the judge is advisory by default
+            "no required scorer applies to case 'voice-1', so it would pass whatever the model said",
+        ),
+        (
+            with_case(
+                scorers=[{"type": "json_schema", "required": False}, {"type": "exact_field", "required": False}]
+            ),
+            "no required scorer applies to case 'voice-1', so it would pass whatever the model said",
+        ),
+        (
+            with_case(expected={"category": "voice"}, expect_abstain=True),
+            "case 'voice-1' is flagged expect_abstain and expects category='voice', but the task's "
+            "abstain value has category='other'; no reply could satisfy both",
+        ),
+        (
+            with_case(expected={"category": "voice", "needs_human": "false"}),
+            "case 'voice-1' expects needs_human='false', which the output schema does not allow: "
+            "'false' is not of type 'boolean'",
+        ),
+        (
+            with_case(expected={"category": "voice", "summary": ""}),
+            "case 'voice-1' expects summary='', which the output schema does not allow",
+        ),
+        (
+            with_case(expected={"category": "voice", "priority": datetime.date(2026, 1, 1)}),
+            "expected: Value error, must be plain JSON: Object of type date is not JSON serializable",
+        ),
     ],
 )
 def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
@@ -702,6 +731,25 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
         (
             {"abstain": {"category": "other", "need_human": True}},
             "task.yaml: abstain sets a field 'need_human' that the output schema does not have",
+        ),
+        (
+            {"abstain": {"category": "other", "needs_human": "yes"}},
+            "task.yaml: abstain sets needs_human='yes', which the output schema does not allow: "
+            "'yes' is not of type 'boolean'",
+        ),
+        (
+            {"scorers": [{"type": s, "required": False} if isinstance(s, str) else {**s, "required": False} for s in TASK["scorers"]]},
+            "no required scorer applies to case 'voice-1', so it would pass whatever the model said",
+        ),
+        # A field name the schema rules out: the scorer would fail every case
+        # it applies to, and the report would blame the model.
+        (
+            {"scorers": [*TASK["scorers"][:3], {"type": "keyword", "field": "sumary"}, "safe_failure"]},
+            "task.yaml: scorer 'keyword' reads the field 'sumary', which the output schema does not have",
+        ),
+        (
+            {"judge": {"rubric": "r", "field": "sumary"}},
+            "task.yaml: judge.field is 'sumary', which the output schema does not have",
         ),
         # Settings that are fine as YAML and cannot be sent as JSON. Each
         # used to load and then raise while the first request was built.
@@ -827,6 +875,10 @@ def test_a_reference_inside_the_schema_is_followed(tmp_path):
         assert scores[0].passed
         empty = score_case(suite.task, suite.cases[0], RawOutput(case_id="voice-1", text=reply(summary="")))
         assert not empty[0].passed and "$.summary" in empty[0].detail
+        # An expected value is held against the subschema the reference leads to.
+        cases = with_case(expected={"category": "voice", "summary": ""})
+        with pytest.raises(ConfigError, match="expects summary='', which the output schema does not allow"):
+            load_suite(write_suite(tmp_path / "expects-empty", task=task, cases=cases))
 
 
 def test_scoring_never_fetches_a_schema_over_the_network():

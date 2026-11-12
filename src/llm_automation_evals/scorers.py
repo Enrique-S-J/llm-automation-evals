@@ -334,8 +334,8 @@ class KeywordScorer(Scorer):
 
     def __init__(self, task: Task, spec: ScorerSpec) -> None:
         super().__init__(task, spec)
-        self._field = spec.options.get("field", "summary")
-        if not isinstance(self._field, str):
+        self.field = spec.options.get("field", "summary")
+        if not isinstance(self.field, str):
             raise ConfigError(f"scorer '{self.name}': 'field' must be a field name")
 
     def applies(self, case: Case) -> bool:
@@ -344,9 +344,9 @@ class KeywordScorer(Scorer):
 
     def score(self, case: Case, output: RawOutput) -> ScoreResult:
         obj = parse_output(output.text).obj
-        text = obj.get(self._field) if obj is not None else None
+        text = obj.get(self.field) if obj is not None else None
         if not isinstance(text, str):
-            return self._result(False, f"output has no text field '{self._field}'")
+            return self._result(False, f"output has no text field '{self.field}'")
         haystack = text.casefold()
         missing = []
         for entry in case.keywords.must_contain:
@@ -363,7 +363,7 @@ class KeywordScorer(Scorer):
             parts.append("must not contain: " + ", ".join(forbidden))
         return self._result(
             False,
-            f"{self._field} " + "; ".join(parts),
+            f"{self.field} " + "; ".join(parts),
             data={"missing": missing, "forbidden": forbidden},
         )
 

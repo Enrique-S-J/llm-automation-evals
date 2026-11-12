@@ -26,6 +26,20 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _plain_json(value: Any) -> Any:
+    """Refuse a value JSON cannot hold.
+
+    YAML can say things JSON cannot: `.inf`, `.nan`, a bare date. Each
+    loads without complaint and fails later, when it is compared with a
+    reply, written into a report, or sent in a request body.
+    """
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"must be plain JSON: {exc}") from None
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Suite definition (task.yaml, cases.yaml)
 # ---------------------------------------------------------------------------
@@ -90,6 +104,8 @@ class Case(_Strict):
     scorers: Optional[list[ScorerSpec]] = None
     notes: str = ""
 
+    _expected_is_json = field_validator("expected")(_plain_json)
+
 
 class EndpointEnv(_Strict):
     """Names of the environment variables the endpoint is read from."""
@@ -124,9 +140,6 @@ class RequestSettings(_Strict):
     # as `seed` or `response_format`.
     extra_body: dict[str, Any] = {}
 
-    # YAML can say things JSON cannot: `.inf`, `.nan`, a bare date. Each of
-    # these loads without complaint and then fails when the first request
-    # body is serialized, so they are refused here.
     @field_validator("temperature")
     @classmethod
     def _finite(cls, value: Union[int, float]) -> Union[int, float]:
@@ -136,18 +149,14 @@ class RequestSettings(_Strict):
 
     @field_validator("extra_body")
     @classmethod
-    def _plain_json(cls, value: dict[str, Any]) -> dict[str, Any]:
+    def _sendable(cls, value: dict[str, Any]) -> dict[str, Any]:
         # extra_body is merged last, so one of these keys would replace what
         # the harness sends, and the report would go on stating the model
         # and temperature of a request that was never made.
         for key, owner in _OWNED_BODY_KEYS.items():
             if key in value:
                 raise ValueError(f"must not set {key}: {owner}")
-        try:
-            json.dumps(value, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"must be plain JSON: {exc}") from None
-        return value
+        return _plain_json(value)
 
 
 class JudgeSettings(_Strict):
@@ -172,6 +181,8 @@ class Task(_Strict):
     confusion_field: Optional[str] = None
     scorers: list[ScorerSpec] = Field(min_length=1)
     judge: Optional[JudgeSettings] = None
+
+    _abstain_is_json = field_validator("abstain")(_plain_json)
 
 
 # ---------------------------------------------------------------------------
