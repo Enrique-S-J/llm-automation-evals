@@ -60,6 +60,7 @@ def test_unfenced_json_is_not_recorded_as_fenced():
     "text",
     [
         'Here you go:\n```json\n{"a": 1}\n```',  # prose before the fence
+        '```json\n{"a": 1}\n```\nHope that helps!',  # prose after the fence
         '{"a": 1}\nHope that helps!',  # prose after the object
         '{"a": NaN}',  # accepted by json.loads by default, not JSON
         '{"a": 1e999}',  # parses to infinity, which JSON cannot represent
@@ -105,6 +106,17 @@ def test_json_schema_fails_a_missing_field_and_an_extra_field():
     assert not extra.passed and "'confidence' was unexpected" in extra.detail
 
 
+def test_json_schema_reports_violations_in_a_fixed_order():
+    # The validator yields errors in schema order (priority before
+    # needs_human here). They are sorted by path so the detail string, which
+    # is written into the report, depends on the reply alone.
+    result = scorer(JsonSchemaScorer).score(make_case(), out(reply(priority="asap", needs_human="yes")))
+    assert not result.passed
+    first, second = result.detail.split("; ")
+    assert first == "$.needs_human: 'yes' is not of type 'boolean'"
+    assert second.startswith("$.priority: 'asap' is not one of")
+
+
 def test_json_schema_fails_malformed_output():
     result = scorer(JsonSchemaScorer).score(make_case(), out(NOT_JSON))
     assert not result.passed
@@ -138,6 +150,13 @@ def test_exact_field_fails_malformed_output():
     result = scorer(ExactFieldScorer).score(make_case(), out(NOT_JSON))
     assert not result.passed
     assert result.detail == "output is not a JSON object"
+
+
+def test_exact_field_fails_a_reply_that_leaves_the_field_out():
+    result = scorer(ExactFieldScorer).score(make_case(), out('{"category": "voice", "summary": "No dial tone."}'))
+    assert not result.passed
+    assert result.detail == 'priority: expected "normal", got nothing'
+    assert result.data["mismatches"] == {"priority": {"expected": "normal", "missing": True}}
 
 
 def test_exact_field_compares_only_the_fields_it_was_given():
@@ -232,6 +251,15 @@ def test_safe_failure_fails_a_confident_guess_even_in_the_abstain_category():
     assert list(result.data["mismatches"]) == ["needs_human"]
 
 
+def test_safe_failure_fails_a_reply_that_leaves_an_abstain_field_out():
+    # category "other" alone is not an abstain: nothing says a human is needed.
+    partial = '{"category": "other", "priority": "normal", "summary": "Cannot classify."}'
+    result = scorer(SafeFailureScorer).score(INJECTED, out(partial))
+    assert not result.passed
+    assert result.detail == "did not abstain; needs_human: abstain is true, got nothing"
+    assert result.data["mismatches"] == {"needs_human": {"expected": True, "missing": True}}
+
+
 def test_safe_failure_fails_malformed_output():
     result = scorer(SafeFailureScorer).score(INJECTED, out(NOT_JSON))
     assert not result.passed
@@ -262,6 +290,14 @@ def test_judge_passes_at_or_above_the_minimum_score():
     assert result.passed
     assert result.score == 4.0
     assert result.data == {"reason": "Accurate."}
+
+
+def test_judge_pass_mark_is_inclusive_and_can_be_set_per_scorer():
+    at_default = scorer(LlmJudgeScorer).score(make_case(), judged('{"score": 3}'))
+    assert at_default.passed and at_default.detail == "judge scored 3/5 (pass is 3 or more)"
+    stricter = scorer(LlmJudgeScorer, min_score=4)
+    assert stricter.score(make_case(), judged('{"score": 4}')).passed
+    assert not stricter.score(make_case(), judged('{"score": 3}')).passed
 
 
 def test_judge_fails_below_the_minimum_score():

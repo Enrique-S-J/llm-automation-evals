@@ -88,6 +88,22 @@ def test_extra_body_is_merged_and_max_tokens_can_be_dropped():
     assert "max_tokens" not in seen[0]
 
 
+def test_temperature_and_timeout_come_from_the_task_and_reach_the_request():
+    seen = []
+
+    def handler(request):
+        seen.append((json.loads(request.content)["temperature"], request.extensions["timeout"]))
+        return completion(reply())
+
+    request = {**TASK["request"], "temperature": 0.7, "timeout_seconds": 12}
+    run(make_suite(request=request), handler)
+    run(make_suite(request=request), handler, timeout=2.5)  # the --timeout override
+    assert seen == [
+        (0.7, {"connect": 12.0, "read": 12.0, "write": 12.0, "pool": 12.0}),
+        (0.7, {"connect": 2.5, "read": 2.5, "write": 2.5, "pool": 2.5}),
+    ]
+
+
 def test_template_substitution_is_a_single_pass():
     # A ticket that contains a placeholder must be inserted as text. Expanding
     # it again would let ticket content pull other inputs into the prompt.
@@ -467,6 +483,7 @@ def test_missing_endpoint_variables_are_named_in_the_error():
         "http://[::1/v1",
         "http://llm .test/v1",
         "http://llm.test/v1#section",
+        "http://[v1.fe]/v1",  # passes urlsplit; only httpx refuses it
     ],
 )
 def test_a_base_url_that_is_not_http_is_rejected_without_echoing_it(url):
@@ -581,6 +598,10 @@ def test_a_misspelled_case_key_is_an_error_not_a_silent_default(tmp_path):
         (with_case(scorers=[{"type": "keyword", "fields": ["x"]}]), "does not take option(s) fields"),
         (with_case(id="has space"), "cases.yaml case has space is invalid"),
         ({"cases": []}, "non-empty 'cases:' list"),
+        (
+            with_case(keywords={"must_not_contian": ["marmot"]}),
+            "keywords.must_not_contian: Extra inputs are not permitted",
+        ),
         # Each of the rest used to load, and quietly checked less than it said.
         (
             with_case(expected={"category": "voice", "priorty": "high"}),
@@ -621,6 +642,9 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
         ({"scorers": ["json_schema", "json_schema"]}, "used more than once: json_schema"),
         ({"scorers": ["exact_match"]}, "task.yaml is invalid"),
         ({"temperature": 0}, "temperature: Extra inputs are not permitted"),
+        # A misspelled setting must not fall back to the default in silence.
+        ({"request": {"temprature": 0.7}}, "request.temprature: Extra inputs are not permitted"),
+        ({"judge": {"rubric": "r", "min_scor": 5}}, "judge.min_scor: Extra inputs are not permitted"),
         (
             {
                 "scorers": [

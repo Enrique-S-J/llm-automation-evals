@@ -42,7 +42,9 @@ class Stub:
 
     `replies` maps a case id to the reply text. `statuses` maps a case id to
     an HTTP status to return instead, and `judge_status` is the status every
-    judge request gets. Every request is recorded.
+    judge request gets. `delays` maps a case id to seconds to wait before
+    answering, and `hold` is a wait applied to every request. Every request
+    is recorded, along with the largest number in flight at once.
     """
 
     def __init__(self, suite):
@@ -51,6 +53,10 @@ class Stub:
         self.replies = {case.id: oracle_reply(suite, case) for case in suite.cases}
         self.statuses = {}
         self.judge_status = 200
+        self.delays = {}
+        self.hold = 0.0
+        self.in_flight = 0
+        self.peak = 0
         self.requests = []
         self._lock = threading.Lock()
         stub = self
@@ -60,11 +66,14 @@ class Stub:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 status, payload = stub.respond(self.path, self.headers.get("Authorization"), body)
                 data = json.dumps(payload).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # the client timed out and hung up, as a test intended
 
             def log_message(self, *args):
                 pass
@@ -88,6 +97,16 @@ class Stub:
         }
         with self._lock:
             self.requests.append(record)
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+        try:
+            time.sleep(self.hold + self.delays.get(record["case"], 0))
+            return self._answer(path, is_judge, case)
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+
+    def _answer(self, path, is_judge, case):
         if path != "/v1/chat/completions":
             return 404, {"error": {"message": "not found"}}
         if is_judge and self.judge_status != 200:
@@ -369,6 +388,28 @@ def test_replies_built_to_break_a_parser_are_failures_not_crashes(workdir, task_
         assert cases[case_id]["scores"][0]["detail"].startswith("not valid JSON: ")
 
 
+def test_concurrency_flag_limits_requests_in_flight_at_the_endpoint(workdir, task_dir, stub):
+    stub.hold = 0.05  # long enough for requests to overlap
+    assert cli("run", task_dir, "--out", workdir / "a", cwd=workdir, stub=stub).returncode == 0
+    assert stub.peak == 4  # task.yaml's default
+    stub.peak = 0
+    assert cli("run", task_dir, "--out", workdir / "b", "--concurrency", "2", cwd=workdir, stub=stub).returncode == 0
+    assert stub.peak == 2
+
+
+def test_timeout_flag_gives_up_on_a_slow_reply_after_one_retry(workdir, task_dir, stub):
+    stub.delays["net-02"] = 3.0
+    out_dir = workdir / "out"
+    result = cli("run", task_dir, "--out", out_dir, "--timeout", "0.5", cwd=workdir, stub=stub)
+
+    assert result.returncode == 3
+    assert "net-02: timed out after 0.5s, retrying once" in result.stderr
+    assert stub.count("net-02") == 2
+    cases = {c["id"]: c for c in json.loads(read(out_dir, "report.json"))["cases"]}
+    assert cases["net-02"]["error"] == "timed out after 0.5s (after 1 retry)"
+    assert sum(c["status"] == "passed" for c in cases.values()) == 29
+
+
 def test_fail_under_turns_the_pass_rate_into_an_exit_code(workdir, task_dir, stub):
     degrade(stub)  # 90.0%
     below = cli("run", task_dir, "--out", workdir / "a", "--fail-under", "95", cwd=workdir, stub=stub)
@@ -626,6 +667,33 @@ def test_report_rescores_against_the_suite_as_it_is_now(workdir, task_dir, stub)
     assert report["model"] == "stub-model"
     assert [c["id"] for c in report["cases"] if c["status"] == "failed"] == ["infra-02", "abstain-04"]
     assert "**Pass rate: 28/30 (93.3%)**" in read(out_dir, "report.md")
+
+
+def test_report_applies_fail_under_to_the_rescored_run(workdir, task_dir, stub):
+    degrade(stub)  # 90.0%
+    out_dir = workdir / "saved run"
+    assert cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub).returncode == 0
+    below = cli("report", task_dir, out_dir, "--fail-under", "95", cwd=workdir)
+    assert below.returncode == 1
+    assert "Pass rate is below --fail-under 95." in below.stderr
+    assert cli("report", task_dir, out_dir, "--fail-under", "90", cwd=workdir).returncode == 0
+
+
+def test_report_refuses_a_saved_run_from_a_different_task(workdir, task_dir, stub):
+    out_dir = workdir / "saved run"
+    assert cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub).returncode == 0
+    original = read(out_dir, "report.json")
+
+    other = workdir / "other task"
+    shutil.copytree(task_dir, other)
+    task = yaml.safe_load(read(other, "task.yaml"))
+    task["name"] = "another_classifier"
+    (other / "task.yaml").write_text(yaml.safe_dump(task, sort_keys=False), encoding="utf-8")
+
+    result = cli("report", other, out_dir, cwd=workdir)
+    assert result.returncode == 2
+    assert "Error: that report is for task 'ticket_classifier'" in result.stderr
+    assert read(out_dir, "report.json") == original
 
 
 def test_report_without_a_saved_run_exits_2(workdir, task_dir):
