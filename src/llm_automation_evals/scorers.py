@@ -146,22 +146,24 @@ class ExactFieldScorer(Scorer):
             not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)
         ):
             raise ConfigError(f"scorer '{self.name}': 'fields' must be a list of field names")
-        self._fields: Optional[list[str]] = fields
+        # None means "whatever the case expects".
+        self.fields: Optional[list[str]] = fields
 
-    def _compared(self, case: Case) -> list[str]:
-        if self._fields is None:
+    def compared(self, case: Case) -> list[str]:
+        """The fields of this case that this scorer compares."""
+        if self.fields is None:
             return list(case.expected)
-        return [f for f in self._fields if f in case.expected]
+        return [f for f in self.fields if f in case.expected]
 
     def applies(self, case: Case) -> bool:
-        return bool(self._compared(case))
+        return bool(self.compared(case))
 
     def score(self, case: Case, output: RawOutput) -> ScoreResult:
         obj = parse_output(output.text).obj
         if obj is None:
             return self._result(False, "output is not a JSON object")
         mismatches = {}
-        for field in self._compared(case):
+        for field in self.compared(case):
             if field not in obj:
                 mismatches[field] = {"expected": case.expected[field], "missing": True}
             elif not json_equal(obj[field], case.expected[field]):

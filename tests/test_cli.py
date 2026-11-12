@@ -357,7 +357,7 @@ def sized_run(workdir):
         directory = workdir / f"suite of {total}"
         directory.mkdir()
         cases = [
-            {"id": f"case-{n:03d}", "input": {"subject": f"ticket {n}", "body": "b"}, "expected": {"category": "voice"}}
+            {"id": f"case-{n:03d}", "input": {"subject": f"ticket {n}", "body": "b"}, "expected": {"category": "voice", "priority": "normal"}}
             for n in range(total)
         ]
         (directory / "task.yaml").write_text(yaml.safe_dump(TASK), encoding="utf-8")

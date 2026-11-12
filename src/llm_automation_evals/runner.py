@@ -21,7 +21,15 @@ from jsonschema import Draft202012Validator, SchemaError
 from pydantic import ValidationError
 
 from .models import Case, ConfigError, EndpointEnv, RawOutput, Task
-from .scorers import LlmJudgeScorer, build_scorers, scorers_for
+from .scorers import (
+    ExactFieldScorer,
+    KeywordScorer,
+    LlmJudgeScorer,
+    SafeFailureScorer,
+    build_scorers,
+    scorers_for,
+    specs_for,
+)
 
 TASK_FILE = "task.yaml"
 CASES_FILE = "cases.yaml"
@@ -148,7 +156,29 @@ def _check_suite(task: Task, cases: list[Case]) -> None:
                 "output_schema property with a string 'enum'"
             )
 
-    build_scorers(task, task.scorers)
+    # A schema that lists its properties and allows no others makes a
+    # misspelled field name detectable: no reply could ever contain it.
+    closed = isinstance(properties, dict) and task.output_schema.get("additionalProperties") is False
+
+    def check_meetable(source: str, field: str, want: Any) -> None:
+        if closed and field not in properties:
+            raise ConfigError(f"{source} a field '{field}' that the output schema does not have")
+        enum = _enum_of(properties, field)
+        if enum is not None and want not in enum:
+            raise ConfigError(
+                f"{source} {field}={want!r}, which the output schema does not allow (one of {enum})"
+            )
+
+    for field, want in task.abstain.items():
+        check_meetable(f"{TASK_FILE}: abstain sets", field, want)
+
+    task_scorers = build_scorers(task, task.scorers)
+    # Per task-level exact_field scorer: the fields it names that at least
+    # one case expects.
+    used: dict[str, set[str]] = {
+        s.name: set() for s in task_scorers if isinstance(s, ExactFieldScorer) and s.fields is not None
+    }
+    task_list_in_use = False
     placeholders = set(_PLACEHOLDER.findall(task.prompt_template))
 
     seen: set[str] = set()
@@ -156,46 +186,85 @@ def _check_suite(task: Task, cases: list[Case]) -> None:
         if case.id in seen:
             raise ConfigError(f"{CASES_FILE}: case id '{case.id}' is used more than once")
         seen.add(case.id)
+        where = f"{CASES_FILE}: case '{case.id}'"
 
         missing = sorted(placeholders - set(case.input))
         if missing:
             raise ConfigError(
-                f"{CASES_FILE}: case '{case.id}' has no input for template "
-                f"placeholder(s): {', '.join(missing)}"
+                f"{where} has no input for template placeholder(s): {', '.join(missing)}"
             )
 
-        # An expectation outside the schema's enum can never be met.
+        # An expectation outside the schema can never be met.
         for field, want in case.expected.items():
-            enum = _enum_of(properties, field)
-            if enum is not None and want not in enum:
-                raise ConfigError(
-                    f"{CASES_FILE}: case '{case.id}' expects {field}={want!r}, "
-                    f"which the output schema does not allow (one of {enum})"
-                )
+            check_meetable(f"{where} expects", field, want)
 
-        if case.scorers is not None:
-            build_scorers(task, case.scorers)
         # A case that states no expectation would be graded on schema validity
         # alone and pass on any well-formed reply. That is allowed, but only
         # when asked for, so a forgotten `expected` block cannot do it.
         keywords = case.keywords
-        states_something = (
-            bool(case.expected)
-            or case.expect_abstain
-            or (keywords is not None and bool(keywords.must_contain or keywords.must_not_contain))
-        )
-        if case.scorers is None and not states_something:
+        has_keywords = keywords is not None and bool(keywords.must_contain or keywords.must_not_contain)
+        if case.scorers is None and not (case.expected or case.expect_abstain or has_keywords):
             raise ConfigError(
-                f"{CASES_FILE}: case '{case.id}' states nothing to check: no 'expected', "
+                f"{where} states nothing to check: no 'expected', "
                 "'keywords', or 'expect_abstain'. If a well-formed reply is all it should "
                 "require, give the case 'scorers: [json_schema]'."
             )
-        if not scorers_for(task, case):
+        listed = build_scorers(task, specs_for(task, case))
+        in_force = [scorer for scorer in listed if scorer.applies(case)]
+        if not in_force:
             raise ConfigError(
                 f"{CASES_FILE}: no scorer applies to case '{case.id}', so it would pass "
                 "whatever the model said. Give it 'expected' fields, 'keywords', or "
                 "'expect_abstain: true'."
             )
+
+        # Everything a case states has to be checked by a scorer in its
+        # list. Each scorer skips the cases it has nothing to check on, so a
+        # statement with no scorer behind it is not an error at scoring
+        # time: the case just passes without it.
+        if case.expect_abstain and not any(isinstance(s, SafeFailureScorer) for s in in_force):
+            raise ConfigError(
+                f"{where} is flagged expect_abstain, but no safe_failure scorer is in its "
+                "scorer list, so nothing would check that the model declined"
+            )
+        if has_keywords and not any(isinstance(s, KeywordScorer) for s in in_force):
+            raise ConfigError(
+                f"{where} defines keywords, but no keyword scorer is in its scorer list"
+            )
+        exact = [s for s in listed if isinstance(s, ExactFieldScorer)]
+        compared = {field for s in exact for field in s.compared(case)}
+        unchecked = [field for field in case.expected if field not in compared]
+        if unchecked:
+            raise ConfigError(
+                f"{where} expects {', '.join(unchecked)}, but no exact_field scorer in its "
+                f"scorer list compares {'it' if len(unchecked) == 1 else 'them'}"
+            )
+
+        # The reverse: a field an exact_field scorer names that nothing
+        # expects. A misspelled name in `fields` removes the comparison.
+        if case.scorers is None:
+            task_list_in_use = True
+            for scorer in exact:
+                if scorer.fields is not None:
+                    used[scorer.name].update(scorer.compared(case))
+        else:
+            for scorer in exact:
+                unknown = [f for f in scorer.fields or [] if f not in case.expected]
+                if unknown:
+                    raise ConfigError(
+                        f"{CASES_FILE}: scorer '{scorer.name}' compares {', '.join(unknown)}, "
+                        f"which case '{case.id}' does not expect"
+                    )
+
+    for scorer in task_scorers:
+        if task_list_in_use and isinstance(scorer, ExactFieldScorer) and scorer.fields is not None:
+            unknown = [f for f in scorer.fields if f not in used[scorer.name]]
+            if unknown:
+                raise ConfigError(
+                    f"{TASK_FILE}: scorer '{scorer.name}' compares {', '.join(unknown)}, which no "
+                    "case expects. If the name is right, give a case that field in 'expected' "
+                    "or remove it from the scorer."
+                )
 
 
 def render_prompt(task: Task, case: Case) -> str:

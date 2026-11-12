@@ -529,8 +529,9 @@ def test_the_task_can_rename_the_environment_variables():
 
 CASES = {
     "cases": [
-        {"id": "voice-1", "input": {"subject": "s", "body": "b"}, "expected": {"category": "voice"}},
+        {"id": "voice-1", "input": {"subject": "s", "body": "b"}, "expected": {"category": "voice", "priority": "normal"}},
         {"id": "abstain-1", "input": {"subject": "", "body": ""}, "expect_abstain": True},
+        {"id": "net-1", "input": {"subject": "s", "body": "b"}, "expected": {"category": "network", "priority": "high"}},
     ]
 }
 
@@ -544,13 +545,13 @@ def write_suite(directory, task=TASK, cases=CASES):
 
 def with_case(**changes):
     first = {**CASES["cases"][0], **changes}
-    return {"cases": [first, CASES["cases"][1]]}
+    return {"cases": [first, *CASES["cases"][1:]]}
 
 
 def test_loads_a_suite_from_a_directory_whose_path_has_spaces(tmp_path):
     suite = load_suite(write_suite(tmp_path / "my evals" / "ticket classifier"))
     assert suite.task.name == "mini"
-    assert [case.id for case in suite.cases] == ["voice-1", "abstain-1"]
+    assert [case.id for case in suite.cases] == ["voice-1", "abstain-1", "net-1"]
     assert suite.cases[1].expect_abstain is True
     # A string path works the same as a Path.
     assert load_suite(str(tmp_path / "my evals" / "ticket classifier")).task.name == "mini"
@@ -580,6 +581,30 @@ def test_a_misspelled_case_key_is_an_error_not_a_silent_default(tmp_path):
         (with_case(scorers=[{"type": "keyword", "fields": ["x"]}]), "does not take option(s) fields"),
         (with_case(id="has space"), "cases.yaml case has space is invalid"),
         ({"cases": []}, "non-empty 'cases:' list"),
+        # Each of the rest used to load, and quietly checked less than it said.
+        (
+            with_case(expected={"category": "voice", "priorty": "high"}),
+            "case 'voice-1' expects a field 'priorty' that the output schema does not have",
+        ),
+        (
+            with_case(expected={"category": "voice", "summary": "Phone is dead."}),
+            "case 'voice-1' expects summary, but no exact_field scorer in its scorer list compares it",
+        ),
+        (
+            with_case(expected={}, expect_abstain=True, scorers=["json_schema"]),
+            "case 'voice-1' is flagged expect_abstain, but no safe_failure scorer is in its scorer list",
+        ),
+        (
+            with_case(keywords={"must_not_contain": ["marmot"]}, scorers=["json_schema", "exact_field"]),
+            "case 'voice-1' defines keywords, but no keyword scorer is in its scorer list",
+        ),
+        (
+            with_case(
+                expected={"category": "voice"},
+                scorers=["json_schema", {"type": "exact_field", "fields": ["category", "catgory"]}],
+            ),
+            "scorer 'exact_field' compares catgory, which case 'voice-1' does not expect",
+        ),
     ],
 )
 def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
@@ -596,6 +621,29 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
         ({"scorers": ["json_schema", "json_schema"]}, "used more than once: json_schema"),
         ({"scorers": ["exact_match"]}, "task.yaml is invalid"),
         ({"temperature": 0}, "temperature: Extra inputs are not permitted"),
+        (
+            {
+                "scorers": [
+                    "json_schema",
+                    {"type": "exact_field", "name": "category_match", "fields": ["category", "catgory"]},
+                    {"type": "exact_field", "name": "priority_match", "fields": ["priority"]},
+                    "safe_failure",
+                ]
+            },
+            "task.yaml: scorer 'category_match' compares catgory, which no case expects",
+        ),
+        (
+            {"scorers": ["json_schema", {"type": "exact_field", "fields": ["category", "priority"]}]},
+            "case 'abstain-1' is flagged expect_abstain, but no safe_failure scorer is in its scorer list",
+        ),
+        (
+            {"abstain": {"category": "declined", "needs_human": True}},
+            "task.yaml: abstain sets category='declined', which the output schema does not allow",
+        ),
+        (
+            {"abstain": {"category": "other", "need_human": True}},
+            "task.yaml: abstain sets a field 'need_human' that the output schema does not have",
+        ),
     ],
 )
 def test_task_mistakes_are_caught_at_load(tmp_path, change, message):
@@ -630,7 +678,7 @@ def test_a_key_written_twice_is_an_error_not_last_one_wins(tmp_path):
     # A merge key that an explicit key then overrides is not a duplicate.
     (directory / "cases.yaml").write_text(
         "cases:\n"
-        "  - &base {id: voice-1, input: {subject: s, body: b}, expected: {category: voice}}\n"
+        "  - &base {id: voice-1, input: {subject: s, body: b}, expected: {category: voice, priority: low}}\n"
         "  - {<<: *base, id: voice-2}\n",
         encoding="utf-8",
     )
