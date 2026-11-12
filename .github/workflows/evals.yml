@@ -1,0 +1,116 @@
+# EXAMPLE WORKFLOW. It needs secrets configured before it does anything.
+#
+# This shows how the eval suite fits a pull request: run the suite as it is
+# on the base branch, run it as it is in the pull request, and fail the check
+# if anything that used to pass now fails. It is an example to adapt. It has
+# not been run on GitHub Actions from this repository.
+#
+# To turn it on, add these under Settings > Secrets and variables > Actions:
+#
+#   secret    EVAL_BASE_URL   OpenAI-compatible base URL including the version
+#                             path, e.g. https://llm-gateway.example/v1
+#   secret    EVAL_API_KEY    optional; sent as a Bearer token when set
+#   variable  EVAL_MODEL      model name as that endpoint knows it
+#
+# Until EVAL_BASE_URL and EVAL_MODEL exist, the job prints a notice and
+# passes without running the suite, so the check is green and meaningless.
+# Pull requests from forks are never given secrets and skip the same way.
+# Do not "fix" that by switching the trigger to pull_request_target: that
+# would run a stranger's code with your endpoint credentials.
+#
+# The endpoint has to be reachable from the runner. A GitHub-hosted runner
+# cannot see a model on your laptop or inside your network; use a hosted
+# endpoint, or a self-hosted runner that can reach the model.
+#
+# Cost: two full runs per pull request (2 x the number of cases requests).
+
+name: Evals (example)
+
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+      - "src/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EVAL_BASE_URL: ${{ secrets.EVAL_BASE_URL }}
+      EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
+      EVAL_MODEL: ${{ vars.EVAL_MODEL }}
+      SUITE: examples/ticket_classifier
+
+    steps:
+      - name: Check that an endpoint is configured
+        id: config
+        run: |
+          if [ -n "$EVAL_BASE_URL" ] && [ -n "$EVAL_MODEL" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Evals skipped: EVAL_BASE_URL (secret) and EVAL_MODEL (variable) are not configured, or this pull request comes from a fork."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.ready == 'true'
+
+      # The suite as it was before this pull request, for the baseline run.
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.ready == 'true' && github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline-src
+
+      - uses: actions/setup-python@v5
+        if: steps.config.outputs.ready == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        if: steps.config.outputs.ready == 'true'
+        run: pip install -e .
+
+      # Both runs use the harness from this pull request, so a difference
+      # between them comes from the task and case files, not from the code
+      # that scores them. `run` exits 3 if the endpoint could not be reached,
+      # which fails the job: an outage is not a result.
+      - name: Run the suite from the base branch
+        if: steps.config.outputs.ready == 'true' && github.event_name == 'pull_request'
+        run: python -m llm_automation_evals run "baseline-src/$SUITE" --out runs/baseline
+
+      - name: Run the suite from this pull request
+        if: steps.config.outputs.ready == 'true'
+        run: python -m llm_automation_evals run "$SUITE" --out runs/candidate
+
+      # Exits 1 when a case that passed on the base branch fails here.
+      - name: Compare against the base branch
+        if: steps.config.outputs.ready == 'true' && github.event_name == 'pull_request'
+        run: python -m llm_automation_evals compare runs/baseline runs/candidate --out runs/comparison.md
+
+      - name: Add the comparison and the report to the job summary
+        if: always() && steps.config.outputs.ready == 'true'
+        run: |
+          for file in runs/comparison.md runs/candidate/report.md; do
+            if [ -f "$file" ]; then
+              cat "$file" >> "$GITHUB_STEP_SUMMARY"
+              echo >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Keep the reports
+        if: always() && steps.config.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: runs/
+          if-no-files-found: ignore
