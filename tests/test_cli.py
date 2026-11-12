@@ -526,6 +526,31 @@ def test_importing_the_package_emits_no_warnings(workdir):
     assert result.stderr == ""
 
 
+def test_a_crash_inside_the_harness_does_not_exit_with_the_gate_code(workdir, two_runs):
+    """An uncaught exception makes Python exit 1, and 1 means "a gate failed".
+
+    A CI job reading the exit code could not tell a bug in the harness from
+    a regression. The failure is injected here by replacing a function, then
+    main() is run the way `python -m` runs it.
+    """
+    baseline, candidate = two_runs
+    script = (
+        "import sys\n"
+        "import llm_automation_evals.__main__ as cli\n"
+        "def broken(*args):\n"
+        "    raise RuntimeError('injected failure')\n"
+        "cli.compare_reports = broken\n"
+        "sys.exit(cli.main(sys.argv[1:]))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, "compare", str(baseline), str(candidate)],
+        cwd=workdir, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 4
+    assert "RuntimeError: injected failure" in result.stderr
+    assert "Unexpected error" in result.stderr.splitlines()[-1]
+
+
 def test_no_arguments_prints_usage(workdir):
     result = cli(cwd=workdir)
     assert result.returncode == 2

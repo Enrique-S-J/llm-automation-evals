@@ -9,12 +9,14 @@ Exit codes:
   1  a gate failed: `run`/`report` below --fail-under, or `compare` found regressions
   2  usage or configuration error; nothing was run
   3  the run is incomplete: at least one case got no model output
+  4  the harness itself failed; a bug, not a result
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from fractions import Fraction
 from pathlib import Path
 from typing import Optional, Sequence
@@ -36,6 +38,7 @@ EXIT_OK = 0
 EXIT_GATE = 1
 EXIT_CONFIG = 2
 EXIT_INCOMPLETE = 3
+EXIT_CRASH = 4
 
 DEFAULT_OUT_ROOT = "runs"
 
@@ -253,6 +256,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         _err("Interrupted; no report written.")
         return 130
+    except Exception:
+        # Left alone, an uncaught exception exits 1, which is the code for a
+        # failed gate. A bug here must not read as a regression in the model.
+        traceback.print_exc()
+        _err("Unexpected error: the harness failed, which says nothing about the model.")
+        return EXIT_CRASH
 
 
 if __name__ == "__main__":
