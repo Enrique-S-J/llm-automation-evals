@@ -50,6 +50,8 @@ def _read_yaml(path: Path) -> Any:
         ) from None
     except OSError as exc:
         raise ConfigError(f"cannot read {path.name}: {exc.strerror}") from None
+    except UnicodeDecodeError:
+        raise ConfigError(f"{path.name} is not UTF-8 text") from None
     try:
         return yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -97,16 +99,27 @@ def load_suite(task_dir: Union[str, Path]) -> Suite:
     return Suite(task=task, cases=cases)
 
 
+def _enum_of(properties: Any, field: str) -> Optional[list]:
+    """The `enum` a schema gives a property, if it gives one.
+
+    A property schema may be a boolean, and `properties` may be absent; both
+    are valid JSON Schema and neither has an enum.
+    """
+    schema = properties.get(field) if isinstance(properties, dict) else None
+    enum = schema.get("enum") if isinstance(schema, dict) else None
+    return enum if isinstance(enum, list) else None
+
+
 def _check_suite(task: Task, cases: list[Case]) -> None:
     try:
         Draft202012Validator.check_schema(task.output_schema)
     except SchemaError as exc:
         raise ConfigError(f"{TASK_FILE}: output_schema is not a valid JSON Schema: {exc.message}") from None
 
-    properties = task.output_schema.get("properties", {})
+    properties = task.output_schema.get("properties")
     if task.confusion_field is not None:
-        enum = properties.get(task.confusion_field, {}).get("enum")
-        if not isinstance(enum, list) or not all(isinstance(v, str) for v in enum):
+        enum = _enum_of(properties, task.confusion_field)
+        if enum is None or not all(isinstance(v, str) for v in enum):
             raise ConfigError(
                 f"{TASK_FILE}: confusion_field '{task.confusion_field}' must be an "
                 "output_schema property with a string 'enum'"
@@ -130,8 +143,8 @@ def _check_suite(task: Task, cases: list[Case]) -> None:
 
         # An expectation outside the schema's enum can never be met.
         for field, want in case.expected.items():
-            enum = properties.get(field, {}).get("enum")
-            if isinstance(enum, list) and want not in enum:
+            enum = _enum_of(properties, field)
+            if enum is not None and want not in enum:
                 raise ConfigError(
                     f"{CASES_FILE}: case '{case.id}' expects {field}={want!r}, "
                     f"which the output schema does not allow (one of {enum})"

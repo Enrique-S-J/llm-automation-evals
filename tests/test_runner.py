@@ -604,6 +604,30 @@ def test_task_mistakes_are_caught_at_load(tmp_path, change, message):
     assert message in str(excinfo.value)
 
 
+def test_a_boolean_subschema_is_handled_as_the_valid_schema_it_is(tmp_path):
+    """`priority: true` is JSON Schema for "anything goes".
+
+    The load-time checks assumed every property schema was a mapping and
+    called .get on the boolean, which ended the command in a traceback.
+    """
+    properties = {**TASK["output_schema"]["properties"], "priority": True}
+    task = {**TASK, "output_schema": {**TASK["output_schema"], "properties": properties}}
+    cases = with_case(expected={"category": "voice", "priority": "whenever"})
+    suite = load_suite(write_suite(tmp_path / "a", task=task, cases=cases))
+    assert suite.cases[0].expected["priority"] == "whenever"
+
+    # It has no enum, so it cannot be the confusion field.
+    with pytest.raises(ConfigError, match="confusion_field 'priority' must be"):
+        load_suite(write_suite(tmp_path / "b", task={**task, "confusion_field": "priority"}))
+
+
+def test_a_file_that_is_not_utf8_is_explained(tmp_path):
+    directory = write_suite(tmp_path)
+    (directory / "cases.yaml").write_bytes("cases: [{id: caf\u00e9}]".encode("latin-1"))
+    with pytest.raises(ConfigError, match="cases.yaml is not UTF-8 text"):
+        load_suite(directory)
+
+
 def test_a_case_can_ask_to_be_graded_on_schema_validity_alone(tmp_path):
     suite = load_suite(write_suite(tmp_path, cases=with_case(expected={}, scorers=["json_schema"])))
     assert suite.cases[0].expected == {}
