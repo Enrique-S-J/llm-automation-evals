@@ -6,7 +6,8 @@
 
 Exit codes:
   0  completed
-  1  a gate failed: `run`/`report` below --fail-under, or `compare` found regressions
+  1  a gate failed: `run`/`report` below --fail-under, or `compare` found
+     regressions or cases missing from the candidate
   2  usage or configuration error; nothing was run
   3  the run is incomplete: a request failed and at least one case has no verdict
   4  the harness itself failed; a bug, not a result
@@ -126,12 +127,20 @@ def build_parser() -> argparse.ArgumentParser:
         "compare",
         help="diff two report.json files, regressions first",
         description="Compare a baseline report with a candidate. Prints markdown and "
-        "exits 1 if any case that passed in the baseline fails in the candidate.",
+        "exits 1 if any case that passed in the baseline fails in the candidate, or if a "
+        "case in the baseline is missing from the candidate.",
     )
     compare.add_argument("baseline", help="report.json (or run directory) to compare against")
     compare.add_argument("candidate", help="report.json (or run directory) under review")
     compare.add_argument("--out", help="also write the comparison to this file")
-    compare.add_argument("--exit-zero", action="store_true", help="exit 0 even when there are regressions")
+    compare.add_argument(
+        "--allow-removed",
+        action="store_true",
+        help="do not fail because cases in the baseline are missing from the candidate",
+    )
+    compare.add_argument(
+        "--exit-zero", action="store_true", help="exit 0 even when there are regressions or removed cases"
+    )
     return parser
 
 
@@ -240,7 +249,18 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             target.write_text(text, encoding="utf-8", newline="")
         except OSError as exc:
             raise ConfigError(f"cannot write '{target}': {exc.strerror}") from None
-    if comparison.regressions and not args.exit_zero:
+    gate_failed = bool(comparison.regressions)
+    if comparison.removed and not args.allow_removed:
+        # A case that is gone cannot regress. Without this, deleting the
+        # cases a change breaks would be a way to pass the comparison.
+        count = len(comparison.removed)
+        _err(
+            f"{count} {'case' if count == 1 else 'cases'} in the baseline "
+            f"{'is' if count == 1 else 'are'} missing from the candidate: "
+            f"{', '.join(comparison.removed)}. Pass --allow-removed if that is intended."
+        )
+        gate_failed = True
+    if gate_failed and not args.exit_zero:
         return EXIT_GATE
     return EXIT_OK
 

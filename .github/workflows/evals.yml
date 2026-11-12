@@ -92,7 +92,10 @@ jobs:
         if: steps.config.outputs.ready == 'true'
         run: python -m llm_automation_evals run "$SUITE" --out runs/candidate
 
-      # Exits 1 when a case that passed on the base branch fails here.
+      # Exits 1 when a case that passed on the base branch fails here, or
+      # when a case on the base branch no longer exists here. A pull request
+      # that removes cases on purpose needs --allow-removed added to this
+      # command, which puts the removal in the diff for a reviewer to see.
       - name: Compare against the base branch
         if: steps.config.outputs.ready == 'true' && github.event_name == 'pull_request'
         run: python -m llm_automation_evals compare runs/baseline runs/candidate --out runs/comparison.md

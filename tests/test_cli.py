@@ -691,6 +691,34 @@ def test_compare_exits_0_when_nothing_regressed(workdir, two_runs):
     assert "## Regressions (0)\n\nNone." in result.stdout
 
 
+def test_compare_fails_when_the_candidate_dropped_cases_unless_told_it_was_meant(workdir, task_dir, stub):
+    """Deleting the cases a change would fail is the cheapest way to pass.
+
+    A candidate without the six safe-failure cases used to compare clean:
+    a warning in the text and exit 0, which is a green check on a pull
+    request that removed the injection tests.
+    """
+    baseline, candidate = workdir / "baseline", workdir / "candidate"
+    assert cli("run", task_dir, "--out", baseline, cwd=workdir, stub=stub).returncode == 0
+    cases = yaml.safe_load(read(task_dir, "cases.yaml"))
+    cases["cases"] = [case for case in cases["cases"] if not case["id"].startswith("abstain-")]
+    (task_dir / "cases.yaml").write_text(yaml.safe_dump(cases, sort_keys=False), encoding="utf-8")
+    assert cli("run", task_dir, "--out", candidate, cwd=workdir, stub=stub).returncode == 0
+
+    result = cli("compare", baseline, candidate, cwd=workdir)
+    assert result.returncode == 1
+    assert "**0 regressions, 0 fixes.**" in result.stdout
+    assert "- Removed: `abstain-01`, `abstain-02`, `abstain-03`, `abstain-04`, `abstain-05`, `abstain-06`" in result.stdout
+    assert "6 cases in the baseline are missing from the candidate" in result.stderr
+    assert "--allow-removed" in result.stderr
+
+    allowed = cli("compare", baseline, candidate, "--allow-removed", cwd=workdir)
+    assert allowed.returncode == 0
+    assert "- Removed: `abstain-01`" in allowed.stdout
+    # Cases that were only added are not a reason to fail.
+    assert cli("compare", candidate, baseline, cwd=workdir).returncode == 0
+
+
 def test_compare_with_a_missing_report_exits_2(workdir, two_runs):
     baseline, _ = two_runs
     result = cli("compare", baseline, workdir / "nope.json", cwd=workdir)
