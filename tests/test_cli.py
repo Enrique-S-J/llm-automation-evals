@@ -1031,6 +1031,29 @@ def test_compare_with_a_report_nested_too_deeply_to_read_exits_2(workdir, two_ru
     assert "Traceback" not in result.stderr
 
 
+def test_compare_prints_model_text_that_the_terminal_encoding_cannot_represent(workdir, task_dir, stub):
+    """Redirected output on Windows is cp1252 before Python 3.15.
+
+    A regressed field holding an arrow or an emoji could not be encoded, so
+    printing the comparison raised UnicodeEncodeError: exit 4 where exit 1
+    was due, and nothing on stdout.
+    """
+    suite = stub.suite
+    by_id = {case.id: case for case in suite.cases}
+    baseline, candidate = workdir / "baseline", workdir / "candidate"
+    assert cli("run", task_dir, "--out", baseline, cwd=workdir, stub=stub).returncode == 0
+    stub.replies["voice-02"] = oracle_reply(suite, by_id["voice-02"], priority="low \u2192 \U0001f525")
+    assert cli("run", task_dir, "--out", candidate, cwd=workdir, stub=stub).returncode == 0
+
+    target = workdir / "comparison.md"
+    result = cli("compare", baseline, candidate, "--out", target, cwd=workdir, env={"PYTHONIOENCODING": "cp1252"})
+    assert result.returncode == 1, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "`priority` expected `urgent`, was `urgent`, now `low \\u2192 \\U0001f525`" in result.stdout
+    # The file is UTF-8 whatever the terminal is, and holds the text itself.
+    assert "now `low \u2192 \U0001f525`" in read(workdir, "comparison.md")
+
+
 def test_compare_with_a_missing_report_exits_2(workdir, two_runs):
     baseline, _ = two_runs
     result = cli("compare", baseline, workdir / "nope.json", cwd=workdir)

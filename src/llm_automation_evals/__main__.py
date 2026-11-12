@@ -355,6 +355,13 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Model text is printed by `compare`, and a terminal or a pipe may not be
+    # UTF-8 (redirected output on Windows is cp1252 before Python 3.15). A
+    # character the stream cannot encode is written as an escape; the default
+    # is to raise, which would turn a comparison into a crash.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="backslashreplace")
     args = build_parser().parse_args(argv)
     handler = {"run": _cmd_run, "report": _cmd_report, "compare": _cmd_compare}[args.command]
     try:
