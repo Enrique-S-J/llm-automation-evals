@@ -62,6 +62,22 @@ def _finite_float(text: str) -> float:
     return value
 
 
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build an object, refusing one that states a key twice.
+
+    json.loads keeps the last of two identical keys; other parsers keep the
+    first or reject the document. A reply can use that to say one thing to
+    this harness and another to whatever consumes it: the answer an injected
+    instruction dictated, then the same keys again with the abstain value.
+    """
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"key {key!r} appears more than once in one object")
+        obj[key] = value
+    return obj
+
+
 def _too_deep(value: Any) -> bool:
     """Whether objects and arrays nest more than MAX_DEPTH levels. Iterative."""
     pending = [(value, 1)]
@@ -112,7 +128,12 @@ def parse_output(text: Optional[str]) -> ParsedOutput:
     body = payload if fenced else text
     try:
         # json.loads accepts NaN and Infinity by default; strict JSON does not.
-        value = json.loads(body, parse_constant=_reject_constant, parse_float=_finite_float)
+        value = json.loads(
+            body,
+            parse_constant=_reject_constant,
+            parse_float=_finite_float,
+            object_pairs_hook=_unique_keys,
+        )
     except ValueError as exc:
         return ParsedOutput(fenced=fenced, error=str(exc))
     except RecursionError:
