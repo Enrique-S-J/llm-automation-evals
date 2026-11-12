@@ -7,7 +7,7 @@ into an ordinary one that nothing checks.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -60,11 +60,16 @@ class ScorerSpec(BaseModel):
         return dict(self.model_extra or {})
 
 
+# A keyword has to contain something visible. "" is a substring of every
+# text: required, it always passes; forbidden, it always fails.
+Term = Annotated[str, Field(pattern=r"\S")]
+
+
 class Keywords(_Strict):
     # Each entry is a term that must appear, or a list of alternatives of
     # which at least one must appear ("voicemail" or "voice mail").
-    must_contain: list[Union[str, list[str]]] = []
-    must_not_contain: list[str] = []
+    must_contain: list[Union[Term, Annotated[list[Term], Field(min_length=1)]]] = []
+    must_not_contain: list[Term] = []
 
 
 class Case(_Strict):

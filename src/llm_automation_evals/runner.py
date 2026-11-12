@@ -40,6 +40,29 @@ class Suite:
     cases: list[Case]
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a mapping with the same key twice.
+
+    YAML says keys are unique; PyYAML keeps the last one and carries on. In
+    a suite file that turns a duplicated `expect_abstain` or `expected` into
+    a silent change of what the case checks.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        seen = set()
+        for key_node, _ in node.value:
+            # A merge key (<<) is not a key of this mapping; the parent
+            # class expands it, and a key it brings in may be overridden.
+            if isinstance(key_node, yaml.ScalarNode) and key_node.tag != "tag:yaml.org,2002:merge":
+                key = self.construct_object(key_node)
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"key {key!r} appears more than once", key_node.start_mark
+                    )
+                seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 def _read_yaml(path: Path) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
@@ -53,7 +76,7 @@ def _read_yaml(path: Path) -> Any:
     except UnicodeDecodeError:
         raise ConfigError(f"{path.name} is not UTF-8 text") from None
     try:
-        return yaml.safe_load(text)
+        return yaml.load(text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path.name} is not valid YAML: {exc}") from None
 

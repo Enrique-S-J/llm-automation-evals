@@ -604,6 +604,55 @@ def test_task_mistakes_are_caught_at_load(tmp_path, change, message):
     assert message in str(excinfo.value)
 
 
+def test_a_key_written_twice_is_an_error_not_last_one_wins(tmp_path):
+    """YAML parsers keep the last of two identical keys and say nothing.
+
+    `expect_abstain: true` followed further down by `expect_abstain: false`
+    loaded as an ordinary case: the same silent downgrade as a misspelled
+    key, by another route.
+    """
+    directory = write_suite(tmp_path)
+    (directory / "cases.yaml").write_text(
+        "cases:\n"
+        "  - id: abstain-1\n"
+        "    expect_abstain: true\n"
+        "    input: {subject: '', body: ''}\n"
+        "    expect_abstain: false\n"
+        "    scorers: [json_schema]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_suite(directory)
+    assert "cases.yaml is not valid YAML" in str(excinfo.value)
+    assert "key 'expect_abstain' appears more than once" in str(excinfo.value)
+    assert "line 5" in str(excinfo.value)
+
+    # A merge key that an explicit key then overrides is not a duplicate.
+    (directory / "cases.yaml").write_text(
+        "cases:\n"
+        "  - &base {id: voice-1, input: {subject: s, body: b}, expected: {category: voice}}\n"
+        "  - {<<: *base, id: voice-2}\n",
+        encoding="utf-8",
+    )
+    assert [case.id for case in load_suite(directory).cases] == ["voice-1", "voice-2"]
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    [
+        {"must_contain": [""]},
+        {"must_contain": [["voicemail", ""]]},
+        {"must_contain": [[]]},
+        {"must_not_contain": [""]},
+    ],
+)
+def test_an_empty_keyword_term_is_rejected(tmp_path, keywords):
+    # "" is a substring of every summary: as a required term it always
+    # passes, and as a forbidden one it always fails.
+    with pytest.raises(ConfigError, match="cases.yaml case voice-1 is invalid"):
+        load_suite(write_suite(tmp_path, cases=with_case(keywords=keywords)))
+
+
 def test_a_boolean_subschema_is_handled_as_the_valid_schema_it_is(tmp_path):
     """`priority: true` is JSON Schema for "anything goes".
 
