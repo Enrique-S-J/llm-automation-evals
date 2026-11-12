@@ -29,6 +29,7 @@ from .models import (
     SavedOutputs,
     ScorerSummary,
     Totals,
+    visible,
 )
 from .runner import Suite
 from .scorers import NO_VERDICT, case_status, parse_output, score_case
@@ -230,7 +231,7 @@ def code_span(value: Any, limit: int = 80, *, in_table: bool = True) -> str:
     literally, so callers that are not writing a cell pass `in_table=False`.
     """
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
-    text = " ".join(text.split())
+    text = visible(" ".join(text.split()))
     if not text:
         return "(empty)"
     if len(text) > limit:
@@ -249,7 +250,7 @@ def _block(text: str) -> list[str]:
         text = text[:_RAW_LIMIT] + f"\n... (truncated; full output is in {REPORT_JSON})"
     runs = re.findall(r"`+", text)
     fence = "`" * max(3, max(map(len, runs)) + 1 if runs else 3)
-    return [f"{fence}text", *text.splitlines(), fence]
+    return [f"{fence}text", *map(visible, text.splitlines()), fence]
 
 
 def _flags(result: CaseResult) -> str:

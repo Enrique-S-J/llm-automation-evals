@@ -6,6 +6,7 @@ a correct abstain, and an injection that was followed.
 """
 
 import json
+import re
 
 import pytest
 
@@ -354,6 +355,35 @@ def test_pipes_are_escaped_in_table_cells_and_nowhere_else():
     comparison = render_comparison(compare_reports(baseline, candidate))
     assert "`category` expected `voice`, was `voice`, now `voice | network`" in comparison
     assert "\\|" not in comparison
+
+
+def test_control_characters_in_model_text_are_shown_not_sent_to_the_terminal():
+    """A reply can carry terminal escape sequences, and reports get printed.
+
+    These bytes used to pass straight through to report.md and to the
+    comparison on stdout, where `cat` or a CI log viewer would act on them:
+    retitle the window, clear the screen, or reorder the text on the line.
+    """
+    escape = "\x1b]0;pwned title\x07\x1b[2J"
+    hostile = reply(category="voice" + escape)
+    # Not JSON, so the control characters are in the raw text itself.
+    prose = "ok \x9b31m red \u202egnp.exe \x00 \x7f"
+    suite = make_suite(make_case("v1"), make_case("v2"))
+    baseline = build(suite=suite, outputs=[out(reply(), "v1"), out(reply(), "v2")])
+    candidate = build(suite=suite, outputs=[out(hostile, "v1"), out(prose, "v2")])
+    markdown = render_markdown(candidate)
+    comparison = render_comparison(compare_reports(baseline, candidate))
+
+    for text in (markdown, comparison):
+        assert not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]", text)
+        assert "`voice\\x1b]0;pwned title\\x07\\x1b[2J`" in text
+    assert "```text\nok \\x9b31m red \\u202egnp.exe \\x00 \\x7f\n```" in markdown
+    # Tabs and line breaks in a raw output are layout, not control: they stay.
+    spaced = build(suite=make_suite(make_case("v1")), outputs=[out("line one\n\tline two\r\nline three", "v1")])
+    assert "```text\nline one\n\tline two\nline three\n```" in render_markdown(spaced)
+    # report.json is data: it holds the reply exactly as it came.
+    saved = json.loads(render_json(candidate))["cases"]
+    assert [case["raw_output"] for case in saved] == [hostile, prose]
 
 
 def test_long_raw_output_is_truncated_in_markdown_but_kept_whole_in_json():

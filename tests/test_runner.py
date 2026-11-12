@@ -353,6 +353,12 @@ def test_secrets_in_the_base_url_are_redacted_from_logged_error_bodies():
     assert logged == ["case-1: HTTP 400 bad password [redacted] for [redacted]"]
 
 
+def test_control_characters_in_a_logged_error_body_are_made_visible():
+    logged = []
+    run(make_suite(), lambda request: httpx.Response(400, text="bad \x1b[2J\x1b]0;title\x07 request"), log=logged.append)
+    assert logged == ["case-1: HTTP 400 bad \\x1b[2J\\x1b]0;title\\x07 request"]
+
+
 # ---------------------------------------------------------------------------
 # Concurrency and ordering
 # ---------------------------------------------------------------------------

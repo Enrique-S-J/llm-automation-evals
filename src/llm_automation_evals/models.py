@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -16,6 +17,27 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ids and names end up in markdown and in the default output path, so they are
 # restricted to characters that are inert in both.
 SAFE_NAME = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+
+
+# Characters that act on a terminal, or reorder the text around them, when
+# they are printed: the C0 and C1 controls other than tab and the line
+# breaks, DEL, and the Unicode bidirectional controls.
+_UNPRINTABLE = re.compile(
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]"
+)
+
+
+def visible(text: str) -> str:
+    """Write control characters as escapes such as `\\x1b`.
+
+    Model output and server error pages end up on a terminal, in a CI log,
+    or in a rendered pull request. Left raw, an escape sequence in them can
+    retitle the window, clear the screen, or hide what the line says.
+    """
+    return _UNPRINTABLE.sub(
+        lambda m: f"\\x{ord(m.group()):02x}" if ord(m.group()) < 0x100 else f"\\u{ord(m.group()):04x}",
+        text,
+    )
 
 
 class ConfigError(Exception):

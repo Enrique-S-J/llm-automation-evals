@@ -20,7 +20,7 @@ import httpx
 import yaml
 from pydantic import ValidationError
 
-from .models import Case, ConfigError, EndpointEnv, RawOutput, Task
+from .models import Case, ConfigError, EndpointEnv, RawOutput, Task, visible
 from .scorers import (
     ExactFieldScorer,
     KeywordScorer,
@@ -527,7 +527,7 @@ class _Caller:
                     if response.status_code < 500:
                         # Redact before cutting: a key that crosses the cut
                         # would no longer match and its first part would show.
-                        snippet = self._redact(" ".join(response.text.split()))[:200]
+                        snippet = visible(self._redact(" ".join(response.text.split()))[:200])
                         self._log(f"{label}: {failure} {snippet}".rstrip())
                         return None, failure
                 if attempt == 1:
