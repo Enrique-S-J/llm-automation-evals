@@ -362,6 +362,23 @@ def test_a_missing_task_directory_exits_2(workdir):
     assert "Traceback" not in result.stderr
 
 
+def test_importing_the_package_emits_no_warnings(workdir):
+    """A warning at import lands on stderr above every command's output.
+
+    pydantic 2.9 warned about a field named `model_env` this way. Warnings
+    are turned into errors here so any new one fails the import.
+    """
+    result = subprocess.run(
+        [sys.executable, "-W", "error", "-c", "import llm_automation_evals.__main__"],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+
+
 def test_no_arguments_prints_usage(workdir):
     result = cli(cwd=workdir)
     assert result.returncode == 2

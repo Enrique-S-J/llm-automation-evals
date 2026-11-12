@@ -87,6 +87,12 @@ class Case(_Strict):
 class EndpointEnv(_Strict):
     """Names of the environment variables the endpoint is read from."""
 
+    # pydantic before 2.10 reserves every field name starting with "model_"
+    # and warns about `model_env` on import, which would put a warning on
+    # stderr at the top of every command. Nothing here shadows a pydantic
+    # attribute, so the reservation is lifted for this class.
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
     base_url_env: str = "EVAL_BASE_URL"
     model_env: str = "EVAL_MODEL"
     api_key_env: str = "EVAL_API_KEY"
