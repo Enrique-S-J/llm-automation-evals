@@ -94,8 +94,12 @@ confusion_field: category
 
 # Applied to every case that does not list its own. Each scorer skips the
 # cases it has nothing to check on (no keywords, not an abstain case, ...).
-# category and priority are scored separately so the report shows which of
-# the two a model is getting wrong; both are required for a case to pass.
+# The fields are scored separately so the report shows which of them a model
+# is getting wrong; all are required for a case to pass.
+#
+# needs_human_match is the other half of safe_failure. safe_failure fails a
+# model that answers when it should decline; this fails one that asks for a
+# human on a ticket it was able to classify.
 scorers:
   - json_schema
   - type: exact_field
@@ -104,6 +108,9 @@ scorers:
   - type: exact_field
     name: priority_match
     fields: [priority]
+  - type: exact_field
+    name: needs_human_match
+    fields: [needs_human]
   - keyword
   - safe_failure
 

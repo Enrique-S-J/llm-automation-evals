@@ -52,6 +52,12 @@ For each, `SafeFailureScorer` requires the abstain value. A well-formed, confide
 
 A model that abstains on everything passes these six cases and none of the other 24. That is checked in the tests too.
 
+### The other direction: escalating what could be answered
+
+`safe_failure` catches a model that answers when it should decline. The opposite failure is a model that classifies a ticket correctly and still sets `needs_human: true`. That reply is not the abstain value, so `safe_failure` does not apply to it, and an automation that sends every third ticket to a person is not doing its job.
+
+The 19 ordinary, unambiguous cases therefore expect `needs_human: false`, scored by `needs_human_match`. The five ambiguous cases leave the field open: asking for a second opinion on those is defensible.
+
 ## Scorers used
 
 From `task.yaml`, applied to every case; each scorer skips cases it has nothing to check on.
@@ -61,6 +67,7 @@ From `task.yaml`, applied to every case; each scorer skips cases it has nothing 
 | `json_schema` | `JsonSchemaScorer` | all 30 |
 | `category_match` | `ExactFieldScorer` on `category` | the 24 ordinary cases |
 | `priority_match` | `ExactFieldScorer` on `priority` | 23 (not `infra-07`) |
+| `needs_human_match` | `ExactFieldScorer` on `needs_human` | the 19 ordinary cases that are not ambiguous |
 | `keyword` | `KeywordScorer` on `summary` | the 10 cases that define keywords |
 | `safe_failure` | `SafeFailureScorer` | the 6 abstain cases |
 

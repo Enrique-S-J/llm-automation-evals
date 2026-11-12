@@ -199,6 +199,7 @@ def test_run_scores_the_example_suite_and_writes_both_reports(workdir, task_dir,
     assert "| Cases | 30 |" in markdown
     assert "| `json_schema` | yes | 29 | 30 | 96.7% |" in markdown
     assert "| `category_match` | yes | 22 | 24 | 91.7% |" in markdown
+    assert "| `needs_human_match` | yes | 18 | 19 | 94.7% |" in markdown
     assert "| `safe_failure` | yes | 5 | 6 | 83.3% |" in markdown
     # net-07 expected network, model said voice; infra-02 did not parse;
     # abstain-04 expected other, model said network.

@@ -7,7 +7,9 @@
 #
 # Fields:
 #   expected        only the fields listed are compared; priority follows the
-#                   rubric in task.yaml's system prompt
+#                   rubric in task.yaml's system prompt. needs_human: false
+#                   means "this is an ordinary ticket, do not hand it to a
+#                   person"; the ambiguous cases leave it open
 #   keywords        terms the summary must (or must not) contain; a nested
 #                   list means "any one of these"
 #   expect_abstain  the correct answer is to decline (see task.yaml: abstain)
@@ -25,6 +27,7 @@ cases:
     expected:
       category: voice
       priority: normal
+      needs_human: false
     keywords:
       must_contain:
         - [phone, dial tone, extension]
@@ -39,6 +42,7 @@ cases:
     expected:
       category: voice
       priority: urgent
+      needs_human: false
 
   - id: voice-03
     input:
@@ -50,6 +54,7 @@ cases:
     expected:
       category: voice
       priority: normal
+      needs_human: false
     keywords:
       must_contain:
         - [voicemail, voice mail, voice message]
@@ -65,6 +70,7 @@ cases:
     expected:
       category: voice
       priority: low
+      needs_human: false
 
   - id: voice-05
     input:
@@ -76,6 +82,7 @@ cases:
     expected:
       category: voice
       priority: high
+      needs_human: false
 
   - id: voice-06
     ambiguous: true
@@ -105,6 +112,7 @@ cases:
     expected:
       category: network
       priority: urgent
+      needs_human: false
     keywords:
       must_contain:
         - [wi-fi, wifi, wireless]
@@ -119,6 +127,7 @@ cases:
     expected:
       category: network
       priority: normal
+      needs_human: false
     keywords:
       must_contain:
         - vpn
@@ -131,6 +140,7 @@ cases:
     expected:
       category: network
       priority: high
+      needs_human: false
     keywords:
       must_contain:
         - [dns, name, resolve, resolution]
@@ -145,6 +155,7 @@ cases:
     expected:
       category: network
       priority: low
+      needs_human: false
 
   - id: net-05
     input:
@@ -156,6 +167,7 @@ cases:
     expected:
       category: network
       priority: urgent
+      needs_human: false
 
   - id: net-06
     ambiguous: true
@@ -201,6 +213,7 @@ cases:
     expected:
       category: infrastructure
       priority: high
+      needs_human: false
     keywords:
       must_contain:
         - backup
@@ -215,6 +228,7 @@ cases:
     expected:
       category: infrastructure
       priority: urgent
+      needs_human: false
     keywords:
       must_contain:
         - [disk, space, storage, volume, full]
@@ -229,6 +243,7 @@ cases:
     expected:
       category: infrastructure
       priority: low
+      needs_human: false
 
   - id: infra-04
     input:
@@ -240,6 +255,7 @@ cases:
     expected:
       category: infrastructure
       priority: high
+      needs_human: false
 
   - id: infra-05
     input:
@@ -251,6 +267,7 @@ cases:
     expected:
       category: infrastructure
       priority: low
+      needs_human: false
 
   - id: infra-06
     ambiguous: true
@@ -294,6 +311,7 @@ cases:
     expected:
       category: other
       priority: high
+      needs_human: false
 
   - id: other-02
     input:
@@ -305,6 +323,7 @@ cases:
     expected:
       category: other
       priority: low
+      needs_human: false
 
   - id: other-03
     input:
@@ -316,6 +335,7 @@ cases:
     expected:
       category: other
       priority: normal
+      needs_human: false
     keywords:
       must_contain:
         - print
@@ -330,6 +350,7 @@ cases:
     expected:
       category: other
       priority: low
+      needs_human: false
 
   # --- safe failure: the right answer is to abstain ---------------------------
 
