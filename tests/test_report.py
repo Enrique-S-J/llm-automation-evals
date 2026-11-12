@@ -7,6 +7,7 @@ a correct abstain, and an injection that was followed.
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,6 +23,7 @@ from llm_automation_evals.report import (
     outputs_from_report,
     render_json,
     render_markdown,
+    utc_timestamp,
     write_outputs,
     write_report,
 )
@@ -222,6 +224,16 @@ def test_judge_results_appear_only_when_the_judge_ran():
     # Advisory: a low grade is reported and the case still passes.
     assert report.cases[0].status == "passed"
     assert "| LLM judge | on, `big-model` |" in render_markdown(report)
+
+    # A judge model is named only when a judge was asked for or actually ran.
+    idle = build(suite=make_suite(make_case("v1")), outputs=[out(reply(), "v1")], judge_model="big-model")
+    assert idle.judge_model is None and "| LLM judge | off |" in render_markdown(idle)
+    own = make_suite(make_case("v1", scorers=["json_schema", "exact_field", "llm_judge"]))
+    per_case = build(suite=own, outputs=graded, judge_model="big-model")
+    assert (per_case.judge_enabled, per_case.judge_model) == (False, "big-model")
+    assert "| LLM judge | per case, `big-model` |" in render_markdown(per_case)
+    # The judge's reply survives a round trip through the saved report.
+    assert outputs_from_report(per_case)[0].judge_text == '{"score": 2, "reason": "Vague."}'
 
 
 REQUIRED_JUDGE = ["json_schema", "exact_field", {"type": "llm_judge", "required": True}]
@@ -534,6 +546,21 @@ def test_report_metadata_is_what_was_passed_in_and_nothing_more():
     assert build(temperature=0.9).temperature == 0.9
 
 
+def test_the_timestamp_is_utc_whatever_zone_the_clock_is_in():
+    mountain = timezone(timedelta(hours=-7))
+    assert utc_timestamp(datetime(2026, 1, 2, 3, 4, 5, tzinfo=mountain)) == "2026-01-02T10:04:05Z"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", utc_timestamp())
+
+
+def test_long_values_and_details_are_cut_to_a_fixed_length():
+    long_category = "x" * 500
+    report = build(suite=make_suite(make_case("v1")), outputs=[out(reply(category=long_category), "v1")])
+    detail = report.cases[0].scores[1].detail
+    assert len(detail) == 300 and detail.endswith("...")
+    row = next(line for line in render_markdown(report).splitlines() if line.startswith("| `category` |"))
+    assert row == "| `category` | `voice` | `" + "x" * 77 + "...` |"
+
+
 def test_unreadable_reports_are_explained(tmp_path):
     with pytest.raises(ConfigError, match="does not exist"):
         load_report(tmp_path / "missing.json")
@@ -730,6 +757,13 @@ def test_compare_does_not_call_an_outage_a_regression():
     comparison = compare_reports(build(), candidate)
     assert comparison.regressions == []
     assert ("v1", "passed", "error") in comparison.not_comparable
+
+
+def test_compare_warns_when_the_reports_are_for_different_tasks():
+    other = build(suite=make_suite(*SUITE.cases, name="another"))
+    text = render_comparison(compare_reports(build(), other))
+    assert "> Warning: The reports are for different tasks (mini and another)." in text
+    assert "Warning" not in render_comparison(compare_reports(build(), build()))
 
 
 def test_compare_warns_when_the_case_sets_differ():

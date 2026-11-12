@@ -43,7 +43,8 @@ class Stub:
 
     `replies` maps a case id to the reply text. `statuses` maps a case id to
     an HTTP status to return instead, and `judge_status` is the status every
-    judge request gets. `delays` maps a case id to seconds to wait before
+    judge request gets. `judge_replies` maps a case id to what the judge
+    says about it, in place of a 4. `delays` maps a case id to seconds to wait before
     answering, and `hold` is a wait applied to every request. Every request
     is recorded, along with the largest number in flight at once.
     """
@@ -53,6 +54,7 @@ class Stub:
         self.case_by_prompt = {render_prompt(suite.task, case): case for case in suite.cases}
         self.replies = {case.id: oracle_reply(suite, case) for case in suite.cases}
         self.statuses = {}
+        self.judge_replies = {}
         self.judge_status = 200
         self.delays = {}
         self.hold = 0.0
@@ -103,19 +105,23 @@ class Stub:
             self.peak = max(self.peak, self.in_flight)
         try:
             time.sleep(self.hold + self.delays.get(record["case"], 0))
-            return self._answer(path, is_judge, case)
+            return self._answer(path, is_judge, case, messages)
         finally:
             with self._lock:
                 self.in_flight -= 1
                 self.answered += 1
 
-    def _answer(self, path, is_judge, case):
+    def _judged_case(self, messages):
+        """The case a judge request is about: the one whose prompt it quotes."""
+        return next((c.id for prompt, c in self.case_by_prompt.items() if prompt.strip() in messages[-1]["content"]), None)
+
+    def _answer(self, path, is_judge, case, messages):
         if path != "/v1/chat/completions":
             return 404, {"error": {"message": "not found"}}
         if is_judge and self.judge_status != 200:
             return self.judge_status, {"error": {"message": "scripted judge failure"}}
         if is_judge:
-            content = '{"score": 4, "reason": "Accurate and brief."}'
+            content = self.judge_replies.get(self._judged_case(messages), '{"score": 4, "reason": "Accurate and brief."}')
         elif case is None:
             return 400, {"error": {"message": "prompt did not match any case"}}
         elif case.id in self.statuses:
@@ -259,9 +265,12 @@ def test_run_sends_what_the_endpoint_contract_says(workdir, task_dir, stub):
     assert {r["body"]["temperature"] for r in stub.requests} == {0}
     # One request per case, every case matched by its exact rendered prompt.
     assert sorted(r["case"] for r in stub.requests) == sorted(case.id for case in stub.suite.cases)
-    # The judge is off unless asked for.
+    # The judge is off unless asked for, and the report does not name one.
     assert stub.count(judge=True) == 0
-    assert "llm_judge" not in read(workdir / "out", "report.json")
+    report = read(workdir / "out", "report.json")
+    assert "llm_judge" not in report
+    assert (json.loads(report)["judge_enabled"], json.loads(report)["judge_model"]) == (False, None)
+    assert "| LLM judge | off |" in read(workdir / "out", "report.md")
 
 
 def test_reports_hold_no_key_no_url_no_port_and_no_paths(workdir, task_dir, stub, tmp_path):
@@ -456,6 +465,14 @@ def sized_run(workdir):
         stub.close()
 
 
+@pytest.mark.parametrize("value", ["101", "-1", "nan", "ninety"])
+def test_fail_under_outside_0_to_100_is_a_usage_error(workdir, task_dir, stub, value):
+    result = cli("run", task_dir, f"--fail-under={value}", cwd=workdir, stub=stub)
+    assert result.returncode == 2
+    assert "argument --fail-under:" in result.stderr
+    assert stub.requests == []
+
+
 def test_fail_under_is_met_by_a_pass_rate_exactly_at_the_threshold(sized_run):
     """29 of 50 is 58%, and 0.58 * 100 is 57.99999999999999 in floating point.
 
@@ -488,6 +505,34 @@ def test_judge_flag_adds_one_judge_request_per_gradable_case(workdir, task_dir, 
     judge = next(s for s in report["by_scorer"] if s["scorer"] == "llm_judge")
     assert judge == {"scorer": "llm_judge", "required": False, "applicable": 24, "passed": 24, "pass_rate": 1.0}
     assert "| `llm_judge` | no | 24 | 24 | 100.0% |" in read(out_dir, "report.md")
+    assert "| LLM judge | on, `stub-model` |" in read(out_dir, "report.md")
+
+
+def test_a_judged_run_names_its_judge_model_and_rescores_to_the_same_report(workdir, task_dir, stub):
+    """The judge path end to end: its own model, its grades saved, re-scored offline."""
+    stub.judge_replies["voice-02"] = '{"score": 2, "reason": "Leaves out who is affected."}'
+    out_dir = workdir / "judged run"
+    result = cli("run", task_dir, "--out", out_dir, "--judge", cwd=workdir, stub=stub, env={"EVAL_JUDGE_MODEL": "judge-model"})
+    assert result.returncode == 0, result.stderr
+
+    # The cases go to EVAL_MODEL and the grading to EVAL_JUDGE_MODEL.
+    assert {r["body"]["model"] for r in stub.requests if not r["judge"]} == {"stub-model"}
+    assert {r["body"]["model"] for r in stub.requests if r["judge"]} == {"judge-model"}
+    original = {name: read(out_dir, name) for name in ("report.json", "report.md")}
+    report = json.loads(original["report.json"])
+    assert (report["model"], report["judge_enabled"], report["judge_model"]) == ("stub-model", True, "judge-model")
+    assert "| LLM judge | on, `judge-model` |" in original["report.md"]
+    assert "| `llm_judge` | no | 23 | 24 | 95.8% |" in original["report.md"]
+    assert "- `voice-02` `llm_judge`: `judge scored 2/5 (pass is 3 or more)`" in original["report.md"]
+    cases = {c["id"]: c for c in report["cases"]}
+    assert cases["voice-02"]["judge_raw_output"] == stub.judge_replies["voice-02"]
+    assert cases["voice-02"]["status"] == "passed"  # advisory
+
+    # Re-scored with no endpoint: the grades come from the saved judge replies.
+    requests_before = len(stub.requests)
+    assert cli("report", task_dir, out_dir, cwd=workdir).returncode == 0
+    assert len(stub.requests) == requests_before
+    assert {name: read(out_dir, name) for name in original} == original
 
 
 def test_a_judge_outage_on_a_required_judge_is_an_incomplete_run_not_a_regression(workdir, task_dir, stub):

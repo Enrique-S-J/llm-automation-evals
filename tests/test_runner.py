@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import httpx
 import pytest
 import yaml
+from referencing.exceptions import Unresolvable
 
 from helpers import ABSTAIN, TASK, abstain_case, completion, make_case, make_suite, reply
 from llm_automation_evals.models import ConfigError, EndpointEnv, RawOutput
@@ -24,6 +25,7 @@ from llm_automation_evals.runner import (
     render_prompt,
     run_suite,
 )
+from llm_automation_evals import scorers as scorers_module
 from llm_automation_evals.scorers import score_case
 
 ENDPOINT = Endpoint(base_url="http://llm.test/v1", model="test-model")
@@ -181,6 +183,20 @@ def test_does_not_retry_a_client_error(status):
     (output,) = run(make_suite(), handler)
     assert len(calls) == 1
     assert output.error == f"HTTP {status}"
+
+
+@pytest.mark.parametrize("status", [201, 204, 302])
+def test_only_200_is_a_completion(status):
+    # A 204 has no body and a 302 is somebody else's page. Neither is retried.
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, json={"choices": [{"message": {"content": reply()}}]})
+
+    (output,) = run(make_suite(), handler)
+    assert len(calls) == 1
+    assert (output.text, output.error) == (None, f"HTTP {status}")
 
 
 def test_does_not_retry_a_connection_failure():
@@ -517,6 +533,14 @@ def test_endpoint_host_is_the_hostname_and_nothing_else(url, host):
     assert Endpoint(url, "m").host == host
 
 
+def test_the_judge_model_is_read_from_its_own_variable():
+    env = {"EVAL_BASE_URL": "http://llm.test/v1", "EVAL_MODEL": "m"}
+    assert Endpoint.from_env(NAMES, env).judge_model is None
+    assert Endpoint.from_env(NAMES, {**env, "EVAL_JUDGE_MODEL": " bigger-model "}).judge_model == "bigger-model"
+    renamed = EndpointEnv(judge_model_env="GRADER")
+    assert Endpoint.from_env(renamed, {**env, "GRADER": "g", "EVAL_JUDGE_MODEL": "ignored"}).judge_model == "g"
+
+
 def test_missing_endpoint_variables_are_named_in_the_error():
     with pytest.raises(ConfigError) as excinfo:
         Endpoint.from_env(NAMES, {})
@@ -696,6 +720,13 @@ def test_a_misspelled_case_key_is_an_error_not_a_silent_default(tmp_path):
             ),
             "scorer 'exact_field' compares catgory, which case 'voice-1' does not expect",
         ),
+        (
+            with_case(
+                keywords={"must_contain": ["phone"]},
+                scorers=["json_schema", "exact_field", {"type": "keyword", "field": "sumary"}],
+            ),
+            "case 'voice-1': scorer 'keyword' reads the field 'sumary', which the output schema does not have",
+        ),
         # Cases that could pass on any reply, or on none. Each loaded.
         (
             with_case(expected={}, scorers=["llm_judge"]),  # the judge is advisory by default
@@ -785,6 +816,14 @@ def test_suite_mistakes_are_caught_at_load(tmp_path, cases, message):
         (
             {"judge": {"rubric": "r", "field": "sumary"}},
             "task.yaml: judge.field is 'sumary', which the output schema does not have",
+        ),
+        (
+            # `note: true` accepts anything, so only the JSON check can object.
+            {
+                "output_schema": with_property(note=True),
+                "abstain": {"category": "other", "needs_human": True, "note": datetime.date(2026, 1, 1)},
+            },
+            "abstain: Value error, must be plain JSON: Object of type date is not JSON serializable",
         ),
         # Settings that are fine as YAML and cannot be sent as JSON. Each
         # used to load and then raise while the first request was built.
@@ -916,7 +955,7 @@ def test_a_reference_inside_the_schema_is_followed(tmp_path):
             load_suite(write_suite(tmp_path / "expects-empty", task=task, cases=cases))
 
 
-def test_scoring_never_fetches_a_schema_over_the_network():
+def test_scoring_never_fetches_a_schema_over_the_network(monkeypatch):
     """A `$ref` to a URL must not turn scoring into an HTTP client.
 
     jsonschema's default registry still retrieves remote references, with a
@@ -945,6 +984,11 @@ def test_scoring_never_fetches_a_schema_over_the_network():
         # Built directly, so the load-time check is not what stops it.
         task = make_suite(output_schema=with_property(summary=remote)).task
         with pytest.raises(ConfigError, match="does not resolve inside the schema"):
+            score_case(task, make_case(), RawOutput(case_id="case-1", text=reply()))
+        # And if that check ever missed one, the validator still has no way
+        # to retrieve it: resolving fails, and nothing is requested.
+        monkeypatch.setattr(scorers_module, "_unresolvable_refs", lambda schema: [])
+        with pytest.raises(Unresolvable):
             score_case(task, make_case(), RawOutput(case_id="case-1", text=reply()))
     finally:
         server.shutdown()
