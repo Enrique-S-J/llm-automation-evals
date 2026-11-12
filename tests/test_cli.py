@@ -695,6 +695,70 @@ def test_report_keeps_the_temperature_the_outputs_were_sampled_at(workdir, task_
     assert {name: read(out_dir, name) for name in original} == original
 
 
+def test_report_from_a_file_under_another_name_does_not_replace_the_run_beside_it(workdir, task_dir, stub):
+    """`report TASK runs/baseline.json` used to write runs/report.json.
+
+    The result always goes to report.json and report.md, and without --out
+    it went beside the source. A later run saved in the same directory was
+    replaced, raw outputs included, with nothing said.
+    """
+    runs = workdir / "runs"
+    assert cli("run", task_dir, "--out", runs, cwd=workdir, stub=stub).returncode == 0
+    (runs / "report.json").rename(runs / "baseline.json")
+    degrade(stub)
+    assert cli("run", task_dir, "--out", runs, cwd=workdir, stub=stub).returncode == 0
+    later = {name: read(runs, name) for name in ("report.json", "report.md")}
+    assert json.loads(later["report.json"])["totals"]["passed"] == 27
+
+    result = cli("report", task_dir, runs / "baseline.json", cwd=workdir)
+    assert result.returncode == 2
+    assert result.stderr.startswith("Error: the source is a file named 'baseline.json'")
+    assert "--out" in result.stderr and "Traceback" not in result.stderr
+    assert {name: read(runs, name) for name in later} == later
+
+    elsewhere = workdir / "re scored"
+    assert cli("report", task_dir, runs / "baseline.json", "--out", elsewhere, cwd=workdir).returncode == 0
+    assert json.loads(read(elsewhere, "report.json"))["totals"]["passed"] == 30
+    assert {name: read(runs, name) for name in later} == later
+
+
+def test_report_does_not_discard_saved_outputs_in_place_unless_told_to(workdir, task_dir, stub):
+    """Raw outputs are the evidence, and re-scoring in place rewrites them.
+
+    After six cases were removed from cases.yaml, `report` rewrote the saved
+    run with 24 cases: the six raw outputs were gone, and a baseline
+    treated this way no longer tripped compare's removed-case check.
+    """
+    out_dir = workdir / "saved run"
+    assert cli("run", task_dir, "--out", out_dir, cwd=workdir, stub=stub).returncode == 0
+    original = {name: read(out_dir, name) for name in ("report.json", "report.md")}
+    cases = yaml.safe_load(read(task_dir, "cases.yaml"))
+    cases["cases"] = [case for case in cases["cases"] if not case["id"].startswith("abstain-")]
+    (task_dir / "cases.yaml").write_text(yaml.safe_dump(cases, sort_keys=False), encoding="utf-8")
+    dropped = "abstain-01, abstain-02, abstain-03, abstain-04, abstain-05, abstain-06"
+
+    # In place, however the directory is spelled.
+    for args in ([out_dir], [out_dir / "report.json"], [out_dir, "--out", workdir / "." / "saved run" / ".." / "saved run"]):
+        result = cli("report", task_dir, *args, cwd=workdir)
+        assert result.returncode == 2, result.stderr
+        assert f"would discard the saved outputs of 6 cases that are no longer in the suite: {dropped}" in result.stderr
+        assert "--allow-removed" in result.stderr and "--out" in result.stderr
+        assert {name: read(out_dir, name) for name in original} == original
+
+    # Somewhere else the saved run survives, so it goes ahead and says what it left out.
+    copy = workdir / "re scored"
+    result = cli("report", task_dir, out_dir, "--out", copy, cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    assert f"Ignoring saved outputs for cases no longer in the suite: {dropped}" in result.stderr
+    assert len(json.loads(read(copy, "report.json"))["cases"]) == 24
+    assert {name: read(out_dir, name) for name in original} == original
+
+    result = cli("report", task_dir, out_dir, "--allow-removed", cwd=workdir)
+    assert result.returncode == 0, result.stderr
+    assert f"Ignoring saved outputs for cases no longer in the suite: {dropped}" in result.stderr
+    assert len(json.loads(read(out_dir, "report.json"))["cases"]) == 24
+
+
 def test_report_applies_fail_under_to_the_rescored_run(workdir, task_dir, stub):
     degrade(stub)  # 90.0%
     out_dir = workdir / "saved run"

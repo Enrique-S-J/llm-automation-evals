@@ -26,6 +26,8 @@ from typing import Optional, Sequence
 from .compare import compare_reports, render_comparison
 from .models import ConfigError, Report
 from .report import (
+    REPORT_JSON,
+    REPORT_MD,
     build_report,
     fraction,
     load_report,
@@ -122,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"report.json, or the run directory holding it (default: {DEFAULT_OUT_ROOT}/<task name>)",
     )
     report.add_argument("--out", help="output directory (default: where the source report is)")
+    report.add_argument(
+        "--allow-removed",
+        action="store_true",
+        help="when re-scoring in place, discard the saved outputs of cases no longer in the suite",
+    )
     report.add_argument("--fail-under", type=_percentage, metavar="PCT", help="exit 1 if the pass rate is below PCT")
 
     compare = commands.add_parser(
@@ -217,9 +224,33 @@ def _cmd_report(args: argparse.Namespace) -> int:
         raise ConfigError(
             f"that report is for task '{previous.task}', but '{args.task_dir}' is '{suite.task.name}'"
         )
+    source_file = source / REPORT_JSON if source.is_dir() else source
+    if args.out:
+        out_dir = Path(args.out)
+    elif source_file.name == REPORT_JSON:
+        out_dir = source_file.parent
+    else:
+        # The result is always named report.json and report.md. Beside a
+        # source with another name, those are some other run's files.
+        raise ConfigError(
+            f"the source is a file named '{source_file.name}', and the result is always written "
+            f"as {REPORT_JSON} and {REPORT_MD}. Beside the source those could replace another "
+            "run, so say where to write them with --out DIR."
+        )
     known = {case.id for case in suite.cases}
     dropped = [case.id for case in previous.cases if case.id not in known]
     if dropped:
+        # The saved raw outputs are the evidence of the run. Writing the
+        # result over the source would delete the ones for these cases.
+        in_place = (out_dir / REPORT_JSON).resolve() == source_file.resolve()
+        if in_place and not args.allow_removed:
+            count = len(dropped)
+            raise ConfigError(
+                f"re-scoring '{source_file}' in place would discard the saved outputs of "
+                f"{count} {'case that is' if count == 1 else 'cases that are'} no longer in the "
+                f"suite: {', '.join(dropped)}. Write the result somewhere else with --out DIR, "
+                "or pass --allow-removed to discard them."
+            )
         _err(f"Ignoring saved outputs for cases no longer in the suite: {', '.join(dropped)}")
     # Model, host, timestamp and temperature describe how the outputs were
     # produced, so they are carried over and not read from the suite as it
@@ -234,10 +265,6 @@ def _cmd_report(args: argparse.Namespace) -> int:
         judge=previous.judge_enabled,
         judge_model=previous.judge_model,
     )
-    if args.out:
-        out_dir = Path(args.out)
-    else:
-        out_dir = source if source.is_dir() else source.parent
     return _finish(report, out_dir, args.fail_under)
 
 
