@@ -374,7 +374,7 @@ What has been run, and what has not.
 | `run` and `compare` against two more models on the same endpoint: `qwen2.5:14b` and `gemma3:12b` | Done. Each was run twice, and the two runs differed only in the timestamp line. `--judge` and `report` were not run with these two. |
 | Sample reports from real models | Committed in [`examples/ticket_classifier/`](examples/ticket_classifier/): three reports (`llama3.2:3b` 13 of 30, `qwen2.5:14b` 21 of 30, `gemma3:12b` 24 of 30) and the two comparisons against the `llama3.2:3b` run. |
 | OpenAI and LiteLLM configurations | Pending. Not run from this repository. |
-| Python 3.10, 3.11, 3.12, and Linux | Pending. `ci.yml` covers them and has not run yet; the sources parse under the Python 3.9 grammar, which rules out newer syntax but is not a test run. |
+| Test suite in CI on GitHub Actions (`ci.yml`): Ubuntu and macOS, each with Python 3.10, 3.11, 3.12 and 3.13 | Passed on 2026-11-17. |
 | `.github/workflows/evals.yml` on GitHub Actions | Pending. Its shell steps were run by hand, in order, against the local model. The workflow itself has not run on GitHub. |
 
 ## Testing
