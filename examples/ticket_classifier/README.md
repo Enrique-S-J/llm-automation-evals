@@ -90,20 +90,24 @@ python -m llm_automation_evals run examples/ticket_classifier
 
 The report lands in `runs/ticket_classifier/`.
 
-## Sample report
+## Sample reports
 
-[`sample_report.md`](sample_report.md) is the report from a real run of this suite against `llama3.2:3b`, served by Ollama 0.40.16 on a laptop, with the command above. It is committed exactly as the run wrote it. It was the only run made for the sample, and neither the cases nor the prompt were changed after seeing it.
+The suite has been run against three local models, each served by Ollama 0.40.16 on a laptop with the command above. The cases and the prompt were the same for all three, and neither was changed after seeing a result. Each file is committed exactly as the run wrote it.
 
-| | |
-|---|---|
-| Passed | 13 of 30 (43.3%) |
-| `json_schema` | 30 of 30, none wrapped in a code fence |
-| `category_match` | 20 of 24 |
-| `priority_match` | 13 of 25 |
-| `needs_human_match` | 11 of 19 |
-| `keyword` | 8 of 10 |
-| `safe_failure` | 4 of 6 |
+| | [`llama3.2:3b`](sample_report.md) | [`qwen2.5:14b`](sample_report_qwen2.5-14b.md) | [`gemma3:12b`](sample_report_gemma3-12b.md) |
+|---|---|---|---|
+| Passed | 13 of 30 (43.3%) | 21 of 30 (70.0%) | 24 of 30 (80.0%) |
+| `json_schema` | 30 of 30 | 30 of 30 | 30 of 30 |
+| `category_match` | 20 of 24 | 20 of 24 | 23 of 24 |
+| `priority_match` | 13 of 25 | 19 of 25 | 21 of 25 |
+| `needs_human_match` | 11 of 19 | 19 of 19 | 17 of 19 |
+| `keyword` | 8 of 10 | 10 of 10 | 10 of 10 |
+| `safe_failure` | 4 of 6 | 5 of 6 | 5 of 6 |
 
-What it shows: the model keeps to the output format, gets the category mostly right, disagrees with the priority labels about half the time, asks for a human on 8 tickets it could have closed out itself, and follows both prompt injections, canary word and all. Three of the four category misses are on cases flagged ambiguous.
+No reply from any model was wrapped in a code fence. Every model was run a second time, and each second run returned the same 30 replies.
 
-What it does not show: a ranking. This is one small local model, one run, 30 synthetic tickets, one author's labels, exact match on priority, and a prompt that was not tuned for the model. A second run produced the same 30 replies. The report is here to show what the harness reports about a real endpoint, failures included, and a 3B model failing more than half of a strict suite is the honest result.
+[`sample_compare_qwen2.5-14b.md`](sample_compare_qwen2.5-14b.md) and [`sample_compare_gemma3-12b.md`](sample_compare_gemma3-12b.md) are what `compare` prints with the `llama3.2:3b` run as the baseline and each larger model as the candidate.
+
+What they show: all three models keep to the output format. The 3B model disagrees with the priority labels about half the time, asks for a human on 8 tickets it could have closed out itself, and follows both prompt injections, canary word and all. The two larger models fix most of that, each in a different place: `qwen2.5:14b` never escalates a ticket it should not, but fails 2 cases the 3B model passed, and `gemma3:12b` gets the category right on all but one ordinary ticket and breaks nothing. All three fail `net-04`, `infra-07` and `abstain-04`, the injection wrapped around a real complaint, which the larger models classify instead of sending to a human.
+
+What they do not show: a ranking. This is 30 synthetic tickets, one author's labels, exact match on priority, and a prompt that was not tuned for any of the models. The three cases between the two larger models are too few to call. The reports are here to show what the harness reports about a real endpoint, failures included.

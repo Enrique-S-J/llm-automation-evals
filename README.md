@@ -74,7 +74,17 @@ The base URL and the key are validated before the first request, and an error ab
 
 ## What a report looks like
 
-The excerpt below is the top of [`examples/ticket_classifier/sample_report.md`](examples/ticket_classifier/sample_report.md): the report from a real run of the example suite against `llama3.2:3b`, served by Ollama 0.40.16 on a laptop. The command was the one in the quickstart. The file is committed exactly as the run wrote it; it was the only run made for the sample, and the suite was not adjusted after seeing it.
+The example suite has been run against three local models, each served by Ollama 0.40.16 on a laptop with the command in the quickstart. The cases and the prompt were the same for all three, and neither was changed after seeing a result. Each report is committed exactly as the run wrote it.
+
+| Model | Passed | `category_match` | `priority_match` | `needs_human_match` | `keyword` | `safe_failure` | Report |
+|---|---|---|---|---|---|---|---|
+| `gemma3:12b` | 24 of 30 (80.0%) | 23 of 24 | 21 of 25 | 17 of 19 | 10 of 10 | 5 of 6 | [report](examples/ticket_classifier/sample_report_gemma3-12b.md) |
+| `qwen2.5:14b` | 21 of 30 (70.0%) | 20 of 24 | 19 of 25 | 19 of 19 | 10 of 10 | 5 of 6 | [report](examples/ticket_classifier/sample_report_qwen2.5-14b.md) |
+| `llama3.2:3b` | 13 of 30 (43.3%) | 20 of 24 | 13 of 25 | 11 of 19 | 8 of 10 | 4 of 6 | [report](examples/ticket_classifier/sample_report.md) |
+
+All 90 replies were valid JSON with no code fence. Every model was run a second time, and each second run returned the same 30 replies as the first.
+
+The excerpt below is the top of the `llama3.2:3b` report, the one with the most failures to show.
 
 ````markdown
 # Eval report: ticket_classifier
@@ -83,7 +93,7 @@ The excerpt below is the top of [`examples/ticket_classifier/sample_report.md`](
 |---|---|
 | Model | `llama3.2:3b` |
 | Endpoint host | `localhost` |
-| Timestamp (UTC) | 2026-11-12T17:46:53Z |
+| Timestamp (UTC) | 2026-11-17T17:33:43Z |
 | Cases | 30 |
 | Temperature | 0 |
 | LLM judge | off |
@@ -154,7 +164,27 @@ What that run shows:
 - The model set `needs_human: true` on 8 of the 19 tickets it had no reason to escalate.
 - It followed both prompt injections, including the canary word each one plants in the summary, and declined the other four safe-failure cases.
 
-What it does not show is how good the model is, or how it compares with another. This is one run of a small local model against 30 synthetic tickets, labelled by one person, with a prompt that was not tuned for it and exact match on a priority rubric that leaves room for argument. See [Limits](#limits). A second run gave the same 30 replies, so `compare` between the two reported no regressions and no fixes. With `--judge`, the same model grading its own summaries passed 5 of 24, which says more about a 3B model as a judge than about the summaries.
+### Comparing runs
+
+`compare` takes two runs and reports what changed, case by case. With `llama3.2:3b` as the baseline and `gemma3:12b` as the candidate, [the output](examples/ticket_classifier/sample_compare_gemma3-12b.md) begins:
+
+````markdown
+# Eval comparison: ticket_classifier
+
+- Baseline: `llama3.2:3b` at `localhost`, 2026-11-17T17:33:43Z: 13/30 (43.3%)
+- Candidate: `gemma3:12b` at `localhost`, 2026-11-17T17:32:46Z: 24/30 (80.0%)
+
+**0 regressions, 11 fixes.** Pass rate 43.3% -> 80.0% (+36.7 pts).
+````
+
+What the three runs show together:
+
+- The suite tells a 3B model from the two larger ones: 13 of 30 against 21 and 24, on the same prompt.
+- A higher pass rate is not the same as no regressions. `qwen2.5:14b` fixed 10 of the 17 cases `llama3.2:3b` failed and failed 2 that it had passed (`voice-06` and `infra-03`, both on priority), so [that comparison](examples/ticket_classifier/sample_compare_qwen2.5-14b.md) exits 1. `gemma3:12b` fixed 11 and broke none.
+- No model passed everything. All three failed `net-04`, `infra-07` and `abstain-04`.
+- `abstain-04` is a prompt injection wrapped around a real complaint. `llama3.2:3b` did what the injected text asked. The two larger models used neither the category, the priority nor the code it demanded, and classified the complaint instead. The task still counts that as a failure: a ticket that tries to dictate its own classification is meant to go to a human.
+
+What they do not show is a ranking to rely on. This is 30 synthetic tickets, labelled by one person, with a prompt that was not tuned for any of the models and exact match on a priority rubric that leaves room for argument. Three cases between the two larger models is too few to rank them; see [Limits](#limits). The judge was run with `llama3.2:3b` only: with `--judge`, that model grading its own summaries passed 5 of 24, which says more about a 3B model as a judge than about the summaries.
 
 ## Writing a suite
 
@@ -341,7 +371,8 @@ What has been run, and what has not.
 | Test suite, Python 3.13.5 on macOS, lowest declared dependency versions (httpx 0.27.0, pydantic 2.9.0, PyYAML 6.0.2, jsonschema 4.18.0, referencing 0.28.4) | 314 passed |
 | Fresh clone into a new directory, new virtualenv, install per the quickstart, run the tests | Done; passed |
 | `run`, `run --judge`, `report` and `compare` against a real endpoint: Ollama 0.40.16 serving `llama3.2:3b` | Done. All four completed. Two runs differed only in the timestamp line, and `report` re-scored a saved run, judged or not, to byte-identical files. |
-| Sample report from a real model | Committed: [`examples/ticket_classifier/sample_report.md`](examples/ticket_classifier/sample_report.md), `llama3.2:3b`, 13 of 30. |
+| `run` and `compare` against two more models on the same endpoint: `qwen2.5:14b` and `gemma3:12b` | Done. Each was run twice, and the two runs differed only in the timestamp line. `--judge` and `report` were not run with these two. |
+| Sample reports from real models | Committed in [`examples/ticket_classifier/`](examples/ticket_classifier/): three reports (`llama3.2:3b` 13 of 30, `qwen2.5:14b` 21 of 30, `gemma3:12b` 24 of 30) and the two comparisons against the `llama3.2:3b` run. |
 | OpenAI and LiteLLM configurations | Pending. Not run from this repository. |
 | Python 3.10, 3.11, 3.12, and Linux | Pending. `ci.yml` covers them and has not run yet; the sources parse under the Python 3.9 grammar, which rules out newer syntax but is not a test run. |
 | `.github/workflows/evals.yml` on GitHub Actions | Pending. Its shell steps were run by hand, in order, against the local model. The workflow itself has not run on GitHub. |

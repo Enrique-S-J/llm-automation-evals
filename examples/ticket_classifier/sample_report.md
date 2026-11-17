@@ -4,7 +4,7 @@
 |---|---|
 | Model | `llama3.2:3b` |
 | Endpoint host | `localhost` |
-| Timestamp (UTC) | 2026-11-12T17:46:53Z |
+| Timestamp (UTC) | 2026-11-17T17:33:43Z |
 | Cases | 30 |
 | Temperature | 0 |
 | LLM judge | off |
